@@ -1,0 +1,172 @@
+Documentation()
+YB - 24/04/2018
+This codeunit takes as an input a Purchase Header of type 'Order' and splits it into PO's according to
+the Vendor Representative contact specification with the appropriate filtering needed.
+
+OnRun(VAR Rec : Record "Purchase Header")
+
+IF ("Buy-from Vendor No." = '') OR (Status <> Status::Open) OR ("Store No." = '') OR ("Document Type" <> "Document Type"::Order) THEN
+  EXIT;
+
+PurchLine1.SETRANGE("Document Type",PurchLine1."Document Type"::Order);
+PurchLine1.SETRANGE("Document No.",Rec."No.");
+IF PurchLine1.FINDSET THEN
+  ReservMgt.DeleteDocumentReservation(DATABASE::"Purchase Line","Document Type","No.",TRUE)
+ELSE
+  EXIT;
+
+VendorNo := "Buy-from Vendor No.";
+Vendor.GET(VendorNo);
+
+OriginalContactNo := "Buy-from Contact No.";
+StoreCode := "Store No.";
+
+VendorRep.SETRANGE("Vendor No.",VendorNo);
+VendorRep.SETCURRENTKEY(Brand,"Product Group","Item Category",Division);
+VendorRep.SETASCENDING(Brand,FALSE);
+VendorRep.SETASCENDING("Product Group",FALSE);
+VendorRep.SETASCENDING("Item Category",FALSE);
+VendorRep.SETASCENDING(Division,FALSE);
+VendorRep.SETFILTER("Store No. Filter",StoreCode);
+VendorRep.CALCFIELDS("Store In Group");
+VendorRep.SETRANGE("Store In Group",TRUE);
+
+IF VendorRep.FINDSET THEN BEGIN
+  REPEAT
+    IF VendorRep."Contact No." <> OriginalContactNo THEN BEGIN
+      IF VendorRep.Brand <> '' THEN
+        ProcessRepRecord(1,VendorRep,Rec)
+      ELSE IF VendorRep.Division <> '' THEN
+        ProcessRepRecord(2,VendorRep,Rec)
+      ELSE
+        ProcessRepRecord(3,VendorRep,Rec);
+    END;
+  UNTIL VendorRep.NEXT = 0;
+
+  PurchLine1.RESET;
+  PurchLine1.SETRANGE("Document Type",PurchLine1."Document Type"::Order);
+  PurchLine1.SETRANGE("Document No.",Rec."No.");
+  IF NOT PurchLine1.FINDSET THEN
+    Rec.DELETE(TRUE);
+END;
+
+LOCAL ProcessRepRecord(Type : Integer;VendorRep : Record "Vendor Representative";OPurchHeader : Record "Purchase Header")
+
+OPurchLine.RESET;
+OPurchLine.SETRANGE("Document Type",OPurchLine."Document Type"::Order);
+OPurchLine.SETRANGE("Document No.",OPurchHeader."No.");
+
+CASE Type OF
+  1:     // Brand
+    BEGIN
+      OPurchLine.SETCURRENTKEY("Attrib 1 Code");
+      OPurchLine.SETRANGE("Attrib 1 Code",VendorRep.Brand);
+    END;
+  2:     // Product Group, Item Category, Division
+    BEGIN
+      OPurchLine.SETCURRENTKEY(Division,"Item Category Code","Product Group Code");
+      OPurchLine.SETRANGE(Division,VendorRep.Division);
+      IF VendorRep."Item Category" <> '' THEN BEGIN
+        OPurchLine.SETRANGE("Item Category Code",VendorRep."Item Category");
+        IF VendorRep."Product Group" <> '' THEN
+          OPurchLine.SETRANGE("Product Group Code",VendorRep."Product Group");
+      END;
+    END;
+  3:     // Store Group only
+    BEGIN
+    END;
+END;
+
+IF OPurchLine.FINDSET THEN BEGIN
+  PurchHeaderTEMP.SETCURRENTKEY("Buy-from Vendor No.","Buy-from Contact No.");
+  PurchHeaderTEMP.SETRANGE("Buy-from Vendor No.",VendorNo);
+  PurchHeaderTEMP.SETRANGE("Buy-from Contact No.",VendorRep."Contact No.");
+  IF PurchHeaderTEMP.FINDFIRST THEN
+    SplitPOLine(PurchHeaderTEMP."No.")
+  ELSE BEGIN
+    newPONo := CreatePOHeader(OPurchHeader,VendorRep);
+    SplitPOLine(newPONo);
+  END;
+END;
+
+LOCAL CreatePOHeader(OPurchHeader : Record "Purchase Header";VendorRep : Record "Vendor Representative") newPONo : Code[20]
+
+PurchHeaderTEMP.INIT;
+PurchHeaderTEMP.SetHideValidationDialog(TRUE);
+PurchHeaderTEMP."Document Type" := PurchHeaderTEMP."Document Type"::Order;
+PurchHeaderTEMP."No." := '';
+PurchHeaderTEMP."Buy-from Vendor No." := OPurchHeader."Buy-from Vendor No.";
+PurchHeaderTEMP.INSERT(TRUE);
+PurchHeaderTEMP.VALIDATE("Buy-from Contact No.",VendorRep."Contact No.");
+PurchHeaderTEMP.MODIFY(TRUE);
+
+PurchHeader := PurchHeaderTEMP;
+PurchHeader.SetHideValidationDialog(TRUE);
+PurchHeader."Order Date" := OPurchHeader."Order Date";
+PurchHeader.VALIDATE("Posting Date",OPurchHeader."Posting Date");
+PurchHeader."Expected Receipt Date" := OPurchHeader."Expected Receipt Date";
+PurchHeader.INSERT(TRUE);
+
+PurchHeader.VALIDATE("Buy-from Contact No.",VendorRep."Contact No.");
+PurchHeader."Payment Terms Code" := OPurchHeader."Payment Terms Code";
+PurchHeader.VALIDATE("Document Date",OPurchHeader."Document Date");
+PurchHeader."Shipment Method Code" := OPurchHeader."Shipment Method Code";
+PurchHeader.VALIDATE("Store No.",OPurchHeader."Store No.");
+PurchHeader.VALIDATE("Location Code",OPurchHeader."Location Code");
+PurchHeader."Buyer ID" := OPurchHeader."Buyer ID";
+IF VendorRep."Buyer Group Code" <> '' THEN 
+  PurchHeader."Buyer Group Code" := VendorRep."Buyer Group Code"
+ELSE
+  PurchHeader."Buyer Group Code" := OPurchHeader."Buyer Group Code";
+PurchHeader.VALIDATE("Shortcut Dimension 1 Code",OPurchHeader."Shortcut Dimension 1 Code");
+PurchHeader.VALIDATE("Shortcut Dimension 2 Code",OPurchHeader."Shortcut Dimension 2 Code");
+PurchHeader.VALIDATE("Purchaser Code",OPurchHeader."Purchaser Code");
+PurchHeader."Reason Code" := OPurchHeader."Reason Code";
+PurchHeader.VALIDATE("Payment Method Code",OPurchHeader."Payment Method Code");
+PurchHeader.VALIDATE("Campaign No.",OPurchHeader."Campaign No.");
+PurchHeader.VALIDATE("Requested Receipt Date", OPurchHeader."Requested Receipt Date");
+PurchHeader.VALIDATE("Promised Receipt Date", OPurchHeader."Promised Receipt Date");
+PurchHeader.VALIDATE("Our Account No.",OPurchHeader."Our Account No.");
+PurchHeader.MODIFY(TRUE);
+
+newPONo := PurchHeader."No.";
+
+LOCAL SplitPOLine(PONo : Code[20])
+
+PurchHeader.GET(PurchHeader."Document Type"::Order,PONo);
+PurchHeader.CALCFIELDS("Last Line No.");
+POLineNo := PurchHeader."Last Line No." + 10000;
+
+IF OPurchLine.FINDFIRST THEN
+  REPEAT
+    IF OPurchLine.DELETE(TRUE) THEN BEGIN
+      PurchLine.INIT;
+      PurchLine."Document Type" := PurchLine."Document Type"::Order;
+      PurchLine."Document No." := PONo;
+      PurchLine."Buy-from Vendor No." := VendorNo;
+      PurchLine."Line No." := POLineNo;
+      PurchLine."Pay-to Vendor No." := OPurchLine."Pay-to Vendor No.";
+      PurchLine.Type := OPurchLine.Type;
+      PurchLine.INSERT(FALSE);
+        
+      IF OPurchLine."Cross-Reference No." <> '' THEN
+        PurchLine.VALIDATE("Cross-Reference No.",OPurchLine."Cross-Reference No.")
+      ELSE BEGIN
+        PurchLine.VALIDATE("No.",OPurchLine."No.");
+        PurchLine.VALIDATE("Variant Code",OPurchLine."Variant Code");
+        PurchLine.VALIDATE("Location Code",OPurchLine."Location Code");
+        PurchLine.VALIDATE("Unit of Measure Code",OPurchLine."Unit of Measure Code");
+      END;
+
+      PurchLine."Currency Code" := OPurchLine."Currency Code";
+      //PurchLine.VALIDATE(Quantity,OPurchLine.Quantity);
+      PurchLine.VALIDATE("Paid Quantity",OPurchLine."Paid Quantity");
+      PurchLine.VALIDATE("Free Quantity",OPurchLine."Free Quantity");
+      PurchLine."IC Partner Code" := OPurchLine."IC Partner Code";
+      PurchLine.VALIDATE("Order Date",OPurchLine."Order Date");
+      PurchLine.VALIDATE("Dimension Set ID",OPurchLine."Dimension Set ID");
+      PurchLine.MODIFY(TRUE);
+
+      POLineNo := POLineNo + 10000;
+    END;
+  UNTIL OPurchLine.NEXT = 0;

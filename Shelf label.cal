@@ -1,0 +1,200 @@
+Documentation()
+
+OnRun(VAR Rec : Record "Shelf Label")
+ShelfLabelRec.COPYFILTERS(Rec);
+
+IF ShelfLabelRec.FINDSET THEN BEGIN
+  LabelFunctions.GET(LabelFunctions.Type::"Shelf Label",ShelfLabelRec."Label Code");
+  InitPrint(ShelfLabelRec."Label Code");
+ 
+  IF LabelFunctions."Print to File" THEN
+    CreateFile
+  ELSE BEGIN
+    // Create instance of TcpClient class and connect
+    TcpClient := TcpClient.TcpClient();
+    IF NOT TryConnect THEN BEGIN
+      Timer := TIME;  
+      Counter := 1;
+      WHILE TIME <= (Timer + 10000) DO BEGIN // try connectig every 2 seconds for 10 seconds
+        IF TIME > (Timer + (2000 * Counter)) THEN BEGIN
+          IF TryConnect THEN
+            BREAK;
+          Counter := Counter + 1;
+        END;    
+      END;
+      IF NOT TcpClient.Connected THEN
+        ERROR('Cannot connect printer. Either printer is in use or it is not connected.');  
+    END;
+    StreamWriter := StreamWriter.StreamWriter(TcpClient.GetStream(), Encoding.UTF8);
+  END;
+  
+  REPEAT
+    SetItemParameters(ShelfLabelRec);
+    WriteLine('^XA^FS');
+    WriteLine('^PA0,1,1,1');//Advanced text 
+    IF STRLEN(ShelfLabelRec."Text 1") > 0 THEN
+      WriteLine('^FO15,10^A0N,32,34^FD' + COPYSTR(ShelfLabelRec."Text 1",1,22) + '^FS');  //DESC1
+    // ******* ADD TEXT 2 HERE
+    WriteLine('^FO375,87^CI28^CW1,E:TT0003M_.TTF^A1N32,34^FD' + COPYSTR(ShelfLabelRec."Text 3",1,22) + '^FS'); //Arabic DESC  
+    WriteLine('^FO20,120^GB430,0,2^FS');  
+    Intamount := ShelfLabelRec."Price on Shelf Label" - (ShelfLabelRec."Price on Shelf Label" - ROUND(ShelfLabelRec."Price on Shelf Label",1,'<'));
+    WriteLine('^FO' + AlignAmount(Intamount) + ',155,^A0N,70,62,^FD' + FORMAT(Intamount) + '^FS');  //Price
+
+    WriteLine('^FO280,140^A0N,20,20^FDVAT %:' + FORMAT(ShelfLabelRec."VAT %") + '^FS');//VAT
+    WriteLine('^FO245,185^A0N,30,30^FDLL^FS');//LL
+    WriteLine('^FO17,135^BY2,2.0^' + GetBarcodeType(ShelfLabelRec."Barcode No.") + 'N,70,Y^FD' + ShelfLabelRec."Barcode No." + '^FS');  //T4
+    
+    WriteLine('^FO395,229^A0N,32,32^FD' + FORMAT(TODAY) + '^FS'); //Date
+    WriteLine('^FO230,270^GB50,20,4^A0N,25,18^FR^FD' + ShelfLabelRec."Item No." + '^FS');  //Item NO
+    // NOTE ALL THE FOLLOWING ARE FIELDS ON THE SHELFLABELREC
+    // ***** ADD Item No
+    // ***** ADD Variant Code
+    // ***** ADD Unit of Measure
+    // ***** ADD Vendor No.
+    // ***** ADD Section and Shelf
+    WriteLine('^PQ' + FORMAT(ShelfLabelRec.Quantity) + '^FS');
+    WriteLine('^XZ');
+    UpdateLabelStatus;
+  UNTIL ShelfLabelRec.NEXT = 0;
+
+  IF LabelFunctions."Print to File" THEN
+    CloseFile
+  ELSE BEGIN
+    StreamWriter.Close();
+    TcpClient.Close();
+  END;
+  
+END ELSE
+  ERROR(Text001 + ' ' + ShelfLabelRec.GETFILTERS);
+
+SetItemParameters(VAR LabelRec : Record "Shelf Label")
+Item.GET(LabelRec."Item No.");
+SalesAmountText := '';
+UOMText := '';
+
+IF LabelRec."Price on Shelf Label" = 0 THEN
+  LabelRec."Price on Shelf Label" := RetailPriceUtil.GetValidRetailPrice2(LabelRec."Store No.",LabelRec."Item No.",
+    LabelRec."Label Is Valid on Date",TIME,LabelRec."Unit of Measure",LabelRec.Variant,'','','','','');
+
+IF LabelRec."Comp. Price on Shelf Label" = 0 THEN
+  LabelRec."Comp. Price on Shelf Label" := RetailPriceUtil.CalcComparisonPrice(
+    Item,LabelRec."Price on Shelf Label" / ItemUnitOfMeasure."Qty. per Unit of Measure");
+
+IF ItemUnitOfMeasure.GET(LabelRec."Item No.",LabelRec."Unit of Measure") AND (ItemUnitOfMeasure."Text on Shelf Label" <> '') THEN
+  UOMText := ItemUnitOfMeasure."Text on Shelf Label"
+ELSE
+  UOMText := LabelRec."Unit of Measure";
+IF STRLEN(UOMText) > 0 THEN
+  UOMText := COPYSTR(UOMText,1,6);
+
+SalesAmountText := FORMAT(LabelRec."Price on Shelf Label",0,'<Integer><Decimal,3>');
+
+InitPrint(LabelCode : Code[20])
+CR := 13;
+LF := 10;
+LineEnd := FORMAT(CR)+FORMAT(LF);
+
+IF LabelPrinter.GET('',LabelPrinter."Label Type"::"Shelf Label",LabelCode) THEN BEGIN
+  PrinterName := LabelPrinter."Printer Name";
+  PrinterIPAddress := LabelPrinter."Printer IP Address"; // YB - 14/06/18
+END;
+IF LabelPrinter.GET(USERID,LabelPrinter."Label Type"::"Shelf Label",LabelCode) THEN BEGIN
+  PrinterName := LabelPrinter."Printer Name";
+ PrinterIPAddress := LabelPrinter."Printer IP Address"; // YB - 14/06/18
+END;
+
+IF ISNULL(LabelPrint) THEN
+  LabelPrint := LabelPrint.PrintUtil;
+
+IF ISNULL(LabelPrint) THEN
+  ERROR(Text003);
+
+WriteLine(EPL_Line : Text)
+IF LabelFunctions."Print to File" THEN
+  SaveLine(EPL_Line)
+ELSE
+  StreamWriter.WriteLine(EPL_Line); // YB - 14/06/2018
+
+PrintLine(EPL_Line : Text)
+IF NOT LabelPrint.PrintString(PrinterName,EPL_Line) THEN
+  ERROR(Text003);
+
+AlignAmount(Amount : Integer) : Text
+// + AK MODIFY 8/6/2018
+CASE Amount OF
+  0..9 : EXIT(FORMAT(460));
+  10..99 : EXIT(FORMAT(440));
+  100..999 : EXIT(FORMAT(390));
+  1000..9999 : EXIT(FORMAT(370));
+  10000..99999 : EXIT(FORMAT(340));
+  100000..999999 : EXIT(FORMAT(300));
+END;
+// - AK 
+
+GetBarcodeType(BarcodeNo : Code[20]) : Code[3]
+// YB - 24/04/2018
+IF COPYSTR(BarcodeNo,1) <> '2' THEN BEGIN
+  CASE STRLEN(BarcodeNo) OF
+    8:
+      IF COPYSTR(BarcodeNo,1,2) = '00' THEN
+        BarcodeType := 'B8'                                // Internal EAN barcode
+      ELSE IF COPYSTR(BarcodeNo,1,1) = '0' THEN
+        BarcodeType := 'B9'                                // UPC-E code(1)
+      ELSE
+        IF Code2Int(COPYSTR(BarcodeNo,1,2)) >= 30 THEN
+          BarcodeType := 'B8'                              // EAN 8 code(3)
+        ELSE
+          BarcodeType := 'BC';                               // Code 128
+    11:
+       IF COPYSTR(BarcodeNo,1,1) = '0' THEN
+         BarcodeType := 'BU'                               // UPC-A code(4)
+       ELSE
+         BarcodeType := 'BC';                                // Code 128
+    12:
+       BarcodeType := 'BC';                              // Code 128
+    13:
+    
+       IF (Code2Int(COPYSTR(BarcodeNo,1,2)) >= 30) OR (Code2Int(COPYSTR(BarcodeNo,1,2)) <= 19) THEN
+         BarcodeType := 'BE'                               // EAN 13 code(5)
+       ELSE
+         BarcodeType := 'BC';                              // Code 128
+    1..7,9,10,14..22:
+       BarcodeType := 'BC';                                  // Code 128
+  END;
+END;
+
+IF (COPYSTR(BarcodeNo,1) = '2') THEN BEGIN
+  IF (STRLEN(BarcodeNo) = 12) OR (STRLEN(BarcodeNo) = 13) THEN   // *** instorecode
+    BarcodeType := 'BE'
+  ELSE
+    BarcodeType := 'BC';
+END;
+
+EXIT(BarcodeType);
+
+Code2Int(pCode : Code[10]) : Integer
+IF NOT EVALUATE(xInt,pCode) THEN
+  xInt := 0;
+EXIT(xInt);
+
+UpdateLabelStatus()
+ShelfLabelPoster2 := ShelfLabelRec;
+ShelfLabelPoster2.Printed := TRUE;
+ShelfLabelPoster2."Date Last Printed" := TODAY;
+ShelfLabelPoster2."Time Last Printed" := TIME;
+ShelfLabelPoster2.MODIFY;
+
+CreateFile()
+ISOFileName := FileMgt.ServerTempFileName('txt');
+
+SaveLine(EPL_Line : Text)
+dotNetFile.AppendAllText(ISOFileName,EPL_Line);
+
+CloseFile()
+dotNetArray := dotNetFile.ReadAllLines(ISOFileName);
+dotNetFile.WriteAllLines(ISOFileName,dotNetArray);
+
+MESSAGE(STRSUBSTNO(Text004,CONVERTSTR(ISOFileName,'\','/')));
+
+LOCAL [TryFunction] TryConnect()
+TcpClient.Connect(PrinterIPAddress, 9100);

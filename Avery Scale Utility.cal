@@ -1,0 +1,403 @@
+Documentation()
+ 
+
+OnRun(VAR Rec : Record "Scale Update Queue")
+ScaleEntryRec.COPYFILTERS(Rec);
+IF ScaleEntryRec.FINDSET THEN BEGIN
+  SetParameters(ScaleEntryRec."Scale No.",ScaleEntryRec."Store No.");
+  InitializeConnection; // connect to the scale and initiate a network stream
+  InitAddDelete; // initializes pre add and delete commands
+
+  REPEAT
+    IF ScaleEntryRec.Action = ScaleEntryRec.Action::Add THEN BEGIN // add PLU
+      UpdateItemPrice(ScaleEntryRec);
+      ConvertAddParametersToByte(ScaleEntryRec.PLU,ScaleEntryRec."Barcode No.",FORMAT(ScaleEntryRec."Unit of Measure Type"),
+          ScaleEntryRec.Price,ScaleEntryRec."Best Before Days", ScaleEntryRec."Text 1", ScaleEntryRec."Text 2");
+      CompleteAddCommand;
+      TransmitPluAdd;
+    END ELSE BEGIN // delete PLU
+      ConvertDeleteParametersToByte(ScaleEntryRec.PLU);
+      CompleteDeleteCommand;
+      TransmitDplu;
+    END;
+    UpdateRecStatus;
+  UNTIL ScaleEntryRec.NEXT = 0;
+
+  TcpClient.Close;
+  NetworkStream.Close;
+END;
+
+LOCAL SetParameters(ScaleNo : Code[10];StoreNo : Code[10])
+// Sets the store number, scale number and IP address, must be called before running the codeunit
+"Store No." := StoreNo;
+"Scale No." := ScaleNo;
+
+Scale.GET(StoreNo,ScaleNo);
+ScaleIPAddress := Scale."Scale IP Address";
+
+LOCAL InitAddDelete()
+// Initialize Pre Add & Delete commands (pl1, pl2, pl3, AddCmdGeneric, DeleteCmdGeneric)
+pl1 := '0,0,51,0,0,90,241,0,0,0,1,0,0,0,17,99,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,19,99,254,32,73,0,0,59,81,0,0,1,1,78,127,255';
+pl2 := '0,0,54,0,0,90,241,0,0,0,1,0,0,0,20,99,0,0,0,0,0,0,0,0,0,0,0,0,0,0,11,0,22,99,254,32,73,0,0,38,81,0,0,1,1,78,127,255';
+pl3 := '0,0,54,0,0,90,241,0,0,0,1,0,0,0,20,99,0,0,0,0,0,0,0,0,0,0,0,0,0,0,11,0,22,99,254,32,73,0,0,38,81,0,0,1,1,78,127,255';
+PluAddGen:='0,0,,0,0,90,241,0,0,0,1,0,0,0,,99,0,0,0,0,0,0,0,0,0,0,0,0,0,29,176,0,153,99,255,32,73,0,0,13,85,0,0,1,1,78,127,255';
+
+Dplu := '0,0,92,0,0,90,241,0,0,0,1,0,0,0,58,99,0,0,0,0,0,0,0,0,0,0,0,0,0,29,176,0,60,99,255,32,73,0,0,13,67,0,0,1,1,78,127,255,';
+
+// create needed global variables for pl1, pl2, pl3...
+// initialize to the fixed sequence first
+
+RandHexGenerator; // generate 6 random hexadecimals to be used
+
+//complete pl1, pl2, pl3
+pl1:=pl1 + ',' + RandHex1 + ',' + RandHex2; 
+pl2:=pl2 + ',' + RandHex1 + ',' + RandHex3 + ',1,1,0'; 
+pl3:=pl3 + ',' + RandHex1 + ',' + RandHex4 + ',4,10,0';
+PluAddGen:=PluAddGen + ',' + RandHex1 + ',' + RandHex5;
+//add the random string to commands
+Dplu2:= Dplu + RandHex1 + ',' + RandHex2;
+
+LOCAL RandHexGenerator()
+// Generates random hexadecimal values for global variables RandHex1...RandHex5
+RandHex1:=convert.ToString(RANDOM(250));
+RandHex2:=convert.ToString(RANDOM(250));
+RandHex3:=FORMAT(convert.ToInt32(RandHex2)+1);
+RandHex4:=FORMAT(convert.ToInt32(RandHex3)+1);
+RandHex5:=FORMAT(convert.ToInt32(RandHex4)+1);
+
+LOCAL InitializeConnection()
+TcpClient := TcpClient.TcpClient();
+
+IF NOT TryConnect THEN BEGIN
+  Timer := TIME;  
+  Counter := 1;
+  WHILE TIME <= (Timer + 10000) DO BEGIN // try connectig every 2 seconds for 10 seconds
+    IF TIME > (Timer + (2000 * Counter)) THEN BEGIN
+      IF TryConnect THEN
+        BREAK;
+      Counter := Counter + 1;
+    END;    
+  END;
+  IF NOT TcpClient.Connected THEN
+    ERROR('Cannot connect to Scale %1 with IP %2',"Scale No.",ScaleIPAddress);  
+END;
+
+NetworkStream := TcpClient.GetStream();
+NetType := NetType.GetType('System.Byte',FALSE);
+
+LOCAL [TryFunction] TryConnect()
+TcpClient.Connect(ScaleIPAddress, 3001);
+
+LOCAL UpdateItemPrice(VAR ScaleRec : Record "Scale Update Queue")
+// Updates tp the current price in case there are any changes
+ScaleRec.Price := RetailPriceUtil.GetValidRetailPrice2("Store No.",ScaleRec."Item No.",
+    ScaleRec."Valid on Date",TIME,ScaleRec."Unit of Measure",ScaleRec.Variant,'','','','','');
+
+LOCAL ConvertAddParametersToByte(PLU : Code[10];Barcode : Code[22];UOM : Text;Price : Decimal;"Best Before" : Integer;Text1 : Text[50];Text2 : Text[50])
+
+// Calls the necessary function depending on type
+hPLU := StringToPreHex(convert.ToInt64(PLU));
+hBarcode := Barcode;
+hBarcode := StringToPreHex(convert.ToInt64(hBarcode));
+hUOM := UOM;
+hPrice := StringToPreHex(convert.ToInt64(Price)); // Price is decimal, converted to string first
+hBestBefore := FORMAT("Best Before"); // Integer to string
+hText1:=DescToByte(Text1);
+hText2:=ArDescToByte(Text2);
+
+LOCAL ConvertDeleteParametersToByte(PLU : Code[10])
+hPLU := FORMAT(PLU);
+
+LOCAL StringtoHex(Varr : Text[50]) Hvar : Text
+// keeping this function for reference we may use it later
+
+//Nb:=convert.ToInt32(Varr);
+//Qu:=10;
+//Count:=2;
+ //REPEAT 
+  //MathRem.DivRem(Nb,16,Rem);
+  //IF ( Count MOD 2) = 0 THEN
+    //Hvar:= Hvar + FORMAT(Rem)
+  //ELSE
+    //Hvar:= Hvar + ',' + FORMAT(Rem);
+  
+  //Qu:=Nb/16;
+  //Nb:=convert.ToInt32(MathRem.Floor(Qu));
+  //Count:=Count+1;
+  //UNTIL Qu<1;
+  
+  // reverse the result string
+  //Count:=2;
+  //R:=STRLEN(DELCHR(Hvar, '=', DELCHR(Hvar,'=', ',')));
+  //FOR i := STRLEN(Hvar) - R  DOWNTO 1 DO BEGIN
+  //IF ( Count MOD 2) = 0 THEN
+    //Reverse := Reverse + SELECTSTR(i,Hvar)
+  //ELSE
+    //Reverse := Reverse + ',' + SELECTSTR(i,Hvar);
+  //END;
+  //Hvar:=Reverse;
+  //MESSAGE(Hvar);
+
+LOCAL CompleteAddCommand()
+// We contruct the plu command with the needed variables, we calculate zero's (which i set manually to fit our needs for now ex: plu will only be 5 nb's)
+// We calculate the plu command length when it's without commas so we can determine the array lenght, we fill the array with needed variables
+
+CLEAR(PluCmd);
+PluCmd:= PluAddGen + ',' + PluZeros(hPLU,1) + ',0,0,0,0' + hPLU + ',' + PluZeros(hPLU,1) + ',0,0,0,0' + hPLU + ',0,0' + hBarcode + ',0,0';
+PluCmd:= PluCmd + hBarcode + ',' + PluZeros(hPLU,1) + ',0,0,0,0,0,0,0,0,0,0,0,0,0' +  hPLU + ',0,0,0,0,0,0,0' + hPrice + ',0,0,0,0,0,0,0,0,0,0,2,0,0';
+PluCmd:= PluCmd + hBarcode + ',0,0,0,0' + hBestBefore + ',1,0,0,1,';
+IF hUOM = 'Weight' THEN BEGIN
+  PluCmd:= PluCmd + '0,';
+  hUOM2:='0';
+  END;
+
+IF hUOM = 'Count' THEN BEGIN
+ PluCmd:= PluCmd + '16,';
+ hUOM2:='1';
+  END;
+PluCmd:= PluCmd + '0,0,2,0,0,255,254,0,0,0,0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,' + hUOM2 + ',0,0,0,0,0,0,0,0,0,0,0,0,0' + hText2 + ',10' + hText1 + ',0,0,0,0,0,0';
+
+StringL:=STRLEN(DELCHR(PluCmd, '=', DELCHR(PluCmd,'=', ','))) + 2;
+
+PluCmd:=INSSTR(PluCmd,FORMAT(StringL),5);
+PluCmd:=INSSTR(PluCmd,FORMAT(StringL - 34),34); 
+
+LOCAL CompleteDeleteCommand()
+// Completes the DeleteCmd global variable using hPLU
+hPLU:=StringToPreHex(convert.ToInt64(hPLU));
+Dplu2:= Dplu2 + ',' + PluZeros(hPLU,2) + hPLU + ',' + PluZeros(hPLU,2) + hPLU + ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,99';
+// copy from DeleteCmdGeneric to a new DeleteCmd variable (same reason as AddCommand)
+
+LOCAL UpdateRecStatus()
+// Marks the ScaleRec as Sent to scale, so it can be deleted from the queue
+ScaleRec2 := ScaleEntryRec;
+ScaleRec2."Sent to Scale" := TRUE;
+
+ScaleRec2."Time Sent":=CURRENTDATETIME;
+ScaleRec2.MODIFY;
+ 
+
+LOCAL DescToByte(desc : Text) return : Text
+ // Convert text1 to bytes for the scale to understand 
+ StringL:=STRLEN(desc);
+ FOR i:=1 TO StringL DO BEGIN
+   Hex:=COPYSTR(desc,i,1);
+   IF EVALUATE(DummyDecimal,Hex) THEN 
+     Val:=convert.ToInt32(Hex,16) + 48
+   ELSE IF Hex= ' ' THEN
+    int:= 32
+   ELSE
+     Val:=convert.ToInt32(Hexx.Hex(Asc.Asc(Hex)),16) + 204;
+ return:=return + ',' + convert.ToString(Val);
+END;
+ 
+
+LOCAL CompleteKeyCommand(KeyIndex : Text;PluNb : Text)
+PluNb:=StringToPreHex(convert.ToInt64(PluNb));
+Kcmd3:=Kcmd3 + ',0,0,0,11,1,0,' + KeyIndex  + ',1,0' + PluZeros(PluNb,2) + PluNb + ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0';
+
+LOCAL TransmitPluAdd()
+// Transmit the plu add command
+// Create Array instances
+// Loop through plu command and convert them to bytes, to fill in the arrays
+
+ // PL1
+Pl1Arr := Pl1Arr.CreateInstance(NetType, 51); 
+FOR i:=1 TO Pl1Arr.Length-1 DO BEGIN
+  temp:=SELECTSTR(i,pl1);
+  bb:=convert.ToByte(temp);
+  Pl1Arr.SetValue(bb,i);
+  END;
+ReadBuffer := ReadBuffer.CreateInstance(NetType, TcpClient.ReceiveBufferSize);
+NetworkStream.Write(Pl1Arr,0,Pl1Arr.Length);
+
+ // PL2
+Pl2Arr := Pl2Arr.CreateInstance(NetType, 54); 
+FOR i:=1 TO Pl2Arr.Length-1 DO BEGIN
+  temp:=SELECTSTR(i,pl2);
+  bb:=convert.ToByte(temp);
+  Pl2Arr.SetValue(bb,i);
+  END;
+
+
+NetworkStream.Write(Pl2Arr,0,Pl2Arr.Length);
+NetworkStream.Read(ReadBuffer,0,TcpClient.ReceiveBufferSize);
+
+ // PL3
+Pl3Arr := Pl3Arr.CreateInstance(NetType, 54); 
+FOR i:=1 TO Pl3Arr.Length-1 DO BEGIN
+  temp:=SELECTSTR(i,pl3);
+  bb:=convert.ToByte(temp);
+  Pl3Arr.SetValue(bb,i);
+  END;
+  
+NetworkStream.Write(Pl3Arr,0,Pl3Arr.Length);
+NetworkStream.Read(ReadBuffer,0,TcpClient.ReceiveBufferSize);
+
+// PLU ADD
+PluAdd := PluAdd.CreateInstance(NetType, StringL); 
+CLEAR(temp);
+CLEAR(bb);
+
+FOR i:=1 TO StringL -1 DO BEGIN
+  temp:=SELECTSTR(i,PluCmd);
+  bb:=convert.ToByte(temp);
+  PluAdd.SetValue(bb,i);
+  END;
+
+NetworkStream.Write(PluAdd,0,PluAdd.Length);
+NetworkStream.Read(ReadBuffer,0,TcpClient.ReceiveBufferSize);
+
+NetworkStream.Flush();
+
+LOCAL TransmitDplu()
+// Transmit delete command to scale 
+
+// Create the array instance and loop througth the command to remove commas and convert values to bytes
+
+StringL:=STRLEN(DELCHR(Dplu2, '=', DELCHR(Dplu2,'=', ','))) + 2;
+DpluArr := DpluArr.CreateInstance(NetType, StringL);
+CLEAR(temp);
+CLEAR(bb);
+FOR i:=1 TO StringL - 1 DO BEGIN
+   temp:=SELECTSTR(i,Dplu2);
+   bb:=convert.ToByte(temp);
+   DpluArr.SetValue(bb,i);
+    END;
+   
+  
+ReadBuffer := ReadBuffer.CreateInstance(NetType, TcpClient.ReceiveBufferSize);
+NetworkStream.Write(DpluArr,0,DpluArr.Length);
+NetworkStream.Read(ReadBuffer,0,TcpClient.ReceiveBufferSize);
+
+NetworkStream.Flush();
+
+LOCAL ArDescToByte(Desc : Text) Return : Text
+
+FOR i:=1 TO STRLEN(Desc) DO BEGIN
+  Hex:=COPYSTR(Desc,i,1);
+  IF EVALUATE(DummyDecimal,Hex) THEN
+    int:=convert.ToInt32(Hex,16) + 48
+  ELSE IF Hex= ' ' THEN
+    int:= 32
+  ELSE IF (Hex='ß') OR (Hex='×') OR (Hex='Ø') OR (Hex='Ò') OR (Hex='¢') OR (Hex='Ð') OR (Hex='Ó') OR (Hex='Ô') OR (Hex='Ù') OR (Hex='Ì') OR (Hex='Í') OR (Hex='Õ') OR (Hex='Ü') OR (Hex='Î') OR (Hex='Ë') OR (Hex='ƒ') THEN BEGIN
+    CASE TRUE OF 
+      Hex='ß' : int:=119;
+      Hex='×' : int:=131;
+      Hex='Ø' : int:=132;
+      Hex='Ò' : int:=126;
+      Hex='¢' : int:=101;
+      Hex='Ð' : int:=125;
+      Hex='Ó' : int:=128;
+      Hex='Ô' : int:=129;
+      Hex='Ù' : int:=133;
+      Hex='Ì' : int:=121;
+      Hex='Í' : int:=122;
+      Hex='Õ' : int:=130;
+      Hex='Î' : int:=123;
+      Hex='Ü' : int:=100;
+      Hex='ƒ' : int:=103;
+    END
+  END
+  ELSE
+    int:=convert.ToInt32(Hexx.Hex(Asc.Asc(Hex)),16) - 96;
+  Return:=Return + ',' + FORMAT(int);
+  END;
+ 
+
+LOCAL StringToPreHex(Varr : BigInteger) Result : Text
+LIntP := LIntP.IntPtr(Varr); 
+hex := LIntP.ToString('X4');
+
+IF STRLEN(hex) MOD 2 <> 0 THEN
+  hex:='0' + hex;  
+i:=-1;
+IF STRLEN(hex)=4 THEN
+  Unti:=3
+ELSE IF STRLEN(hex)=6 THEN
+  Unti:=5
+ELSE IF STRLEN(hex)=8 THEN
+  Unti:=7
+ELSE IF STRLEN(hex)=10 THEN
+  Unti:=9
+ELSE IF STRLEN(hex)=12 THEN
+  Unti:=11;
+
+REPEAT
+ i:=i+2;
+ Container:=COPYSTR(hex,i,2);
+
+ Val := LInt32.Parse(Container, NumStyles.HexNumber);
+ 
+ Result:=Result + ',' + convert.ToString(Val);
+ 
+ UNTIL i=Unti;
+ 
+
+KeyAssign(PLUNB : Code[10];KeyIndex : Code[10];ScaleNo : Code[10];StoreNo : Code[10])
+SetParameters(ScaleNo,StoreNo);
+InitializeConnection;
+InitKey;
+CompleteKeyCommand(FORMAT(KeyIndex),FORMAT(PLUNB));
+TransmitKey;
+TcpClient.Close;
+NetworkStream.Close;
+
+LOCAL InitKey()
+Kcmd1:='0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,28,132,0,74,100,253,32,73,0,0,120,85,0,0,1,1,78,0,0,';
+Kcmd15:=',0,0,0,2,0,15,66,15,1,0,0,0,0,11,70,105,120,101,100,32,75,101,121,98,111,97,116,100,32,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0';
+Kcmd2 := '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,28,132,0,75,100,253,32,73,0,0,119,85,0,0,1,1,78,0,0,';
+RandHexGenerator;
+Kcmd1:=Kcmd1 + RandHex1 + ',' + RandHex2 + Kcmd15;
+Kcmd3:=Kcmd2 + RandHex1 + ',' + RandHex3;
+
+LOCAL PluZeros(HexPlu : Text;Identifier : Integer) Result : Text
+
+StringL:=STRLEN(DELCHR(HexPlu, '=', DELCHR(HexPlu,'=', ',')));
+
+IF Identifier = 1 THEN BEGIN
+ IF StringL = 1 THEN
+   Result:='0,0,0'
+ ELSE IF StringL = 2 THEN
+   Result:='0,0'
+ ELSE IF StringL = 3 THEN
+   Result:='0';
+END;
+
+IF Identifier = 2 THEN BEGIN
+ IF StringL = 1 THEN
+   Result:='0,0,0,0,0,0,0,0'
+ ELSE IF StringL = 2 THEN
+   Result:='0,0,0,0,0,0,0'
+ ELSE IF StringL = 3 THEN
+   Result:='0,0,0,0,0,0';
+END;
+
+LOCAL TransmitKey()
+//transmit command
+StringL:=STRLEN(DELCHR(Kcmd3, '=', DELCHR(Kcmd3,'=', ','))) + 2;
+KeyCmd1 := KeyCmd1.CreateInstance(NetType, 106);
+KeyArr := KeyArr.CreateInstance(NetType, StringL);
+CLEAR(temp);
+CLEAR(bb);
+FOR i:=1 TO 105 DO BEGIN
+   temp:=SELECTSTR(i,Kcmd1);
+   bb:=convert.ToByte(temp);
+   KeyCmd1.SetValue(bb,i);
+    END;
+
+FOR i:=1 TO StringL - 1 DO BEGIN
+   temp:=SELECTSTR(i,Kcmd3);
+   bb:=convert.ToByte(temp);
+   KeyArr.SetValue(bb,i);
+    END;
+// transmit kcmd1
+ReadBuffer := ReadBuffer.CreateInstance(NetType, TcpClient.ReceiveBufferSize);
+NetworkStream.Write(KeyCmd1,0,KeyCmd1.Length); 
+NetworkStream.Read(ReadBuffer,0,TcpClient.ReceiveBufferSize);  
+// transmit kcmd3  
+
+NetworkStream.Write(KeyArr,0,KeyArr.Length);
+NetworkStream.Read(ReadBuffer,0,TcpClient.ReceiveBufferSize);
+
+NetworkStream.Flush();

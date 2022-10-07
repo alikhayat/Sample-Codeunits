@@ -1,0 +1,576 @@
+Documentation()
+Scale Utility to prepare actions to be sent to scale
+
+OnRun(VAR Rec : Record "Scheduler Job Header")
+SchHdr := Rec;
+LoadStoreBuffer;
+ScaleLabelCounter := 0;
+RetailSetup.GET;
+
+ItemBuffer.DELETEALL;
+LoadItemBuffer;
+IF Buffer.FINDSET THEN REPEAT
+  CreateNeededScaleLabels(Buffer.Filter);
+UNTIL Buffer.NEXT = 0;
+
+SchHdr."Last Message Text" := STRSUBSTNO(PROCESS_JOB_OK,ScaleLabelCounter);
+SchHdr.MODIFY;
+COMMIT;
+Rec := SchHdr;
+
+LOCAL LoadStoreBuffer()
+//LoadStoreBuffer
+Buffer.RESET;
+Buffer.DELETEALL;
+
+IF (SchHdr."Distribution Restrictions" = SchHdr."Distribution Restrictions"::No) OR
+   (SchHdr."Distribution Restrictions" = SchHdr."Distribution Restrictions"::"Exclude List")
+THEN
+  IF Store.FINDSET THEN REPEAT
+    Buffer.Filter := Store."No.";
+    Buffer.INSERT;
+  UNTIL Store.NEXT = 0;
+
+SchInclExcl.SETRANGE("Location List Type",SchInclExcl."Location List Type"::"To");
+SchInclExcl.SETRANGE("Scheduler Job ID",SchHdr."Job ID");
+
+IF SchHdr."Distribution Restrictions" = SchHdr."Distribution Restrictions"::"Include List" THEN
+  IF SchInclExcl.FINDSET THEN REPEAT
+    Buffer.Filter := SchInclExcl."Location Code";
+    Buffer.INSERT;
+  UNTIL SchInclExcl.NEXT = 0;
+
+IF SchHdr."Distribution Restrictions" = SchHdr."Distribution Restrictions"::"Exclude List" THEN
+  IF SchInclExcl.FINDSET THEN REPEAT
+    IF Buffer.GET(SchInclExcl."Location Code") THEN
+      Buffer.DELETE;
+  UNTIL SchInclExcl.NEXT = 0;
+
+LOCAL LoadItemBuffer()
+IF ItemBuffer.FINDFIRST THEN
+  EXIT;
+
+RetailSetup.GET;
+SchedulerSetup.GET;
+
+IF Buffer.FINDSET THEN BEGIN
+  Store.GET(Buffer.Filter);
+  MinActionNo := Store."Last Action for Scale Label Up";
+
+  REPEAT
+    Store.GET(Buffer.Filter);
+    IF Store."Last Action for Scale Label Up" < MinActionNo THEN
+       MinActionNo := Store."Last Action for Scale Label Up";
+  UNTIL Buffer.NEXT = 0;
+END;
+
+RecRef.OPEN(99001509);
+FieldRefTableNo := RecRef.FIELD(12);
+FieldRefEntryNo := RecRef.FIELD(1);
+FieldRefKey := RecRef.FIELD(14);
+
+//Tables: 'Item|Sales Price|Discount Offer|Item Distribution|Item Variant|Barcodes|Item Unit of Measure'
+FieldRefTableNo.SETFILTER('27|7002|99001502|10000704|5401|99001451|5404');
+FieldRefEntryNo.SETFILTER(STRSUBSTNO('%1..',MinActionNo + 1));
+
+IF RecRef.FINDSET THEN REPEAT
+  TableNo := FieldRefTableNo.VALUE;
+  CASE TableNo OF
+    27 :
+      BEGIN
+        ItemBuffer."No." := FieldRefKey.VALUE;
+        IF ItemBuffer.INSERT THEN;
+      END;
+    7002,5401,5404 :
+      BEGIN
+        ItemBuffer."No." := BOUtil.SeparateActKey(1,FORMAT(FieldRefKey.VALUE));
+        IF ItemBuffer.INSERT THEN;
+      END;
+    10000704 :
+      BEGIN
+        ItemBuffer."No." := BOUtil.SeparateActKey(3,FORMAT(FieldRefKey.VALUE));
+        IF ItemBuffer.INSERT THEN;
+      END;
+    99001451 :
+      IF Barcodes.GET(FieldRefKey.VALUE) THEN BEGIN
+        ItemBuffer."No." := Barcodes."Item No.";
+        IF ItemBuffer.INSERT THEN;
+      END;
+    99001502 :
+        IF DiscountOffer.GET(FieldRefKey.VALUE) THEN BEGIN
+          DiscountOffer.CALCFIELDS("Starting Date","Ending Date");
+          DiscountOfferLine.SETRANGE("Offer No.",DiscountOffer."No.");
+          IF DiscountOfferLine.FINDSET THEN REPEAT
+            CASE DiscountOfferLine.Type OF
+              DiscountOfferLine.Type::Item :
+                BEGIN
+                  ItemBuffer."No." := DiscountOfferLine."No.";
+                  IF ItemBuffer.INSERT THEN;
+                  DiscountBuffer."Item No." := DiscountOfferLine."No.";
+                  DiscountBuffer."Sales Code" := DiscountOffer."No.";
+                  DiscountBuffer."Starting Date" := DiscountOffer."Starting Date";
+                  DiscountBuffer."Ending Date" := DiscountOffer."Ending Date";
+                  IF DiscountBuffer.INSERT THEN;
+                END;
+              DiscountOfferLine.Type::"Product Group" :
+                BEGIN
+                  ProductGroupBuffer.Code := COPYSTR(DiscountOfferLine."No.",1,MAXSTRLEN(ProductGroupBuffer.Code));
+                  IF ProductGroupBuffer.INSERT THEN;
+                  DiscountBuffer."Item No." := DiscountOfferLine."No.";
+                  DiscountBuffer."Sales Code" := DiscountOffer."No.";
+                  DiscountBuffer."Starting Date" := DiscountOffer."Starting Date";
+                  DiscountBuffer."Ending Date" := DiscountOffer."Ending Date";
+                  IF DiscountBuffer.INSERT THEN;
+                END;
+              DiscountOfferLine.Type::"Item Category" :
+                BEGIN
+                  ItemCategoryBuffer.Code := DiscountOfferLine."No.";
+                  IF ItemCategoryBuffer.INSERT THEN;
+                  DiscountBuffer."Item No." := DiscountOfferLine."No.";
+                  DiscountBuffer."Sales Code" := DiscountOffer."No.";
+                  DiscountBuffer."Starting Date" := DiscountOffer."Starting Date";
+                  DiscountBuffer."Ending Date" := DiscountOffer."Ending Date";
+                  IF DiscountBuffer.INSERT THEN;
+                END;
+              DiscountOfferLine.Type::All :
+                BEGIN
+                  AllItems := TRUE;
+                  DiscountBuffer."Item No." := 'ALL';
+                  DiscountBuffer."Sales Code" := DiscountOffer."No.";
+                  DiscountBuffer."Starting Date" := DiscountOffer."Starting Date";
+                  DiscountBuffer."Ending Date" := DiscountOffer."Ending Date";
+                  IF DiscountBuffer.INSERT THEN;
+                END;
+            END;
+          UNTIL DiscountOfferLine.NEXT = 0;
+        END;
+  END;
+UNTIL RecRef.NEXT = 0;
+
+IF AllItems THEN BEGIN
+  IF Item.FINDSET THEN REPEAT
+    ItemBuffer."No." := Item."No.";
+    IF ItemBuffer.INSERT THEN;
+  UNTIL Item.NEXT = 0;
+END ELSE BEGIN
+  Item.SETCURRENTKEY("Item Category Code","Product Group Code");
+  IF ItemCategoryBuffer.FINDSET THEN REPEAT
+    Item.SETRANGE("Item Category Code",ItemCategoryBuffer.Code);
+    IF Item.FINDSET THEN REPEAT
+      ItemBuffer."No." := Item."No.";
+      IF ItemBuffer.INSERT THEN;
+    UNTIL Item.NEXT = 0;
+  UNTIL ItemCategoryBuffer.NEXT = 0;
+  IF ProductGroupBuffer.FINDSET THEN REPEAT
+    IF ProductGroup.GET(ProductGroupBuffer.Code) AND (NOT ItemCategoryBuffer.GET(ProductGroup."Item Category Code")) THEN BEGIN
+      Item.SETRANGE("Item Category Code",ProductGroup."Item Category Code");
+      Item.SETRANGE("Product Group Code",ProductGroup.Code);
+      IF Item.FINDSET THEN REPEAT
+        ItemBuffer."No." := Item."No.";
+        IF ItemBuffer.INSERT THEN;
+      UNTIL Item.NEXT = 0;
+    END;
+  UNTIL ProductGroupBuffer.NEXT = 0;
+END;
+
+EntryNo := FieldRefEntryNo.VALUE;
+IF EntryNo <> 0 THEN
+  IF Buffer.FINDSET THEN REPEAT
+    Store.GET(Buffer.Filter);
+    Store."Last Action for Scale Label Up" := EntryNo;
+    Store.MODIFY;
+  UNTIL Buffer.NEXT = 0;
+RecRef.CLOSE;
+
+CreateNeededScaleLabels(StoreNo : Code[10])
+RecNo := 0;
+
+IF Buffer.Filter = '' THEN BEGIN
+  Buffer.Filter := StoreNo;
+  Buffer.INSERT;
+END;
+
+Store.GET(Buffer.Filter);
+
+LoadItemBuffer;
+TotalRecs := ItemBuffer.COUNT;
+
+IF GUIALLOWED THEN
+  IF TotalRecs > 0 THEN
+    Window.OPEN(
+      Text000 +
+      Text001 +
+      '@2@@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+IF ItemBuffer.FINDSET THEN REPEAT
+  RecNo := RecNo + 1;
+  IF GUIALLOWED THEN
+    Window.UPDATE(2,ROUND(RecNo / TotalRecs * 10000,1));
+  
+  ScaleUpdateQueue.SETCURRENTKEY("Store No.","Scale No.","Item No.",Variant,"Unit of Measure","Valid on Date",Action);
+  ScaleUpdateQueue.SETRANGE("Store No.",Store."No.");
+  ScaleUpdateQueue.SETRANGE("Item No.",ItemBuffer."No.");
+  IF Item.GET(ItemBuffer."No.") THEN
+    IF Item."Scale Use" OR ScaleUpdateQueue.FINDFIRST THEN BEGIN // either item is marked as scale use or was previously sent to scale
+      IF GUIALLOWED THEN
+        Window.UPDATE(1,ItemBuffer."No." + '/');
+      IF BOUtil.ItemValidInStore(Item,StoreNo) THEN BEGIN
+        CheckSalesUOM;
+        VariantExists := FALSE;
+        CheckVariants;
+        ProcessScaleLabels(StoreNo,Item."No.");
+      END;
+  END;
+UNTIL ItemBuffer.NEXT = 0;
+
+IF GUIALLOWED THEN
+  IF TotalRecs > 0 THEN
+    Window.CLOSE;
+
+CheckVariants()
+//CheckVariants
+ItemVariant.SETFILTER("Item No.",ItemBuffer."No.");
+VariantExists := ItemVariant.FINDFIRST;
+
+CheckSalesUOM()
+//CheckSalesUOM
+ItemUOMBuffer.SETRANGE("Item No.",ItemBuffer."No.");
+IF ItemUOMBuffer.FINDFIRST THEN
+  EXIT;
+
+ItemUOMBuffer."Item No." := ItemBuffer."No.";
+Item.GET(ItemBuffer."No.");
+ItemUOMBuffer.Code := Item."Sales Unit of Measure";
+ItemUOMBuffer.INSERT;
+
+ItemUnitofMeasure.SETRANGE("Item No.",ItemBuffer."No.");
+ItemUnitofMeasure.SETRANGE("Print Shelf Label",TRUE);
+IF ItemUnitofMeasure.FINDSET THEN REPEAT
+  ItemUOMBuffer := ItemUnitofMeasure;
+  IF ItemUOMBuffer.INSERT THEN;
+UNTIL ItemUnitofMeasure.NEXT = 0;
+
+ProcessScaleLabels(StoreNo : Code[10];ItemNo : Code[20])
+Item.GET(ItemNo);
+ItemUOMBuffer.RESET;
+ItemUOMBuffer.SETRANGE("Item No.",Item."No.");
+IF ItemUOMBuffer.FINDSET THEN REPEAT
+  IF GUIALLOWED THEN
+    Window.UPDATE(1,ItemBuffer."No." + '/' + ItemUOMBuffer.Code);
+  IF VariantExists THEN BEGIN
+    IF ItemUOMBuffer.Code = '' THEN
+      TmpText := ''
+    ELSE
+      TmpText := ItemUOMBuffer.Code + '/';
+    ItemVariant.SETFILTER("Item No.",Item."No.");
+    IF ItemVariant.FINDSET THEN REPEAT
+      IF ItemVariantUOM.GET(Item."No.",ItemVariant.Code,ItemUOMBuffer.Code) THEN BEGIN
+        IF GUIALLOWED THEN
+          Window.UPDATE(1,ItemBuffer."No." + '/' + TmpText + ItemVariant.Code);
+        UpdScaleLabels(Item."No.",StoreNo,ItemVariant.Code,ItemUOMBuffer.Code);
+      END;
+    UNTIL ItemVariant.NEXT = 0;
+  END ELSE
+    UpdScaleLabels(Item."No.",StoreNo,'',ItemUOMBuffer.Code);
+UNTIL ItemUOMBuffer.NEXT = 0;
+
+UpdScaleLabels(ItemNo : Code[20];StoreNo : Code[10];VariantCode : Code[10];UOM : Code[10])
+
+FindScaleLabelSetup(ItemNo,StoreNo);
+IF ScaleItemSetup.FINDFIRST THEN
+  REPEAT
+    IF ScaleItemSetup."Scale Use" THEN BEGIN // Add to Scale
+      GetFilteredDateBuffer(ItemNo,StoreNo);
+      IF DateBuffer.FINDSET THEN BEGIN
+        CLEAR(ValidScaleLabel);
+        REPEAT
+          UpdScaleLabel(DateBuffer."Starting Date",ItemNo,StoreNo,ScaleItemSetup."Scale Code",VariantCode,UOM,ValidScaleLabel,ScaleItemSetup."Scale Format",ScaleItemSetup."Scale Group");
+        UNTIL DateBuffer.NEXT = 0;
+      END;
+      // Delete any Action.Delete records that were not sent to scales yet
+      CLEAR(ValidScaleLabel);
+      ValidScaleLabel.SETCURRENTKEY("Store No.","Scale No.","Item No.",Variant,"Unit of Measure","Valid on Date",Action);
+      ValidScaleLabel.SETRANGE("Store No.",StoreNo);
+      ValidScaleLabel.SETRANGE("Scale No.",ScaleItemSetup."Scale Code");
+      ValidScaleLabel.SETRANGE("Item No.",ItemNo);
+      ValidScaleLabel.SETRANGE(Variant,VariantCode);
+      ValidScaleLabel.SETRANGE("Unit of Measure",UOM);
+      ValidScaleLabel.SETRANGE(Action,ValidScaleLabel.Action::Delete);
+      ValidScaleLabel.SETRANGE("Sent to Scale",FALSE);
+      ValidScaleLabel.DELETEALL;
+    END ELSE BEGIN // Delete from Scale
+      CLEAR(ValidScaleLabel);
+      ValidScaleLabel.SETCURRENTKEY("Store No.","Scale No.","Item No.",Variant,"Unit of Measure","Valid on Date",Action);
+      ValidScaleLabel.SETRANGE("Store No.",StoreNo);
+      ValidScaleLabel.SETRANGE("Scale No.",ScaleItemSetup."Scale Code");
+      ValidScaleLabel.SETRANGE("Item No.",ItemNo);
+      ValidScaleLabel.SETRANGE(Variant,VariantCode);
+      ValidScaleLabel.SETRANGE("Unit of Measure",UOM);
+      ValidScaleLabel.SETRANGE(Action,ValidScaleLabel.Action::Add);
+      ValidScaleLabel.SETRANGE("Sent to Scale",FALSE);
+      ValidScaleLabel.DELETEALL;
+      ValidScaleLabel.SETRANGE("Sent to Scale",TRUE);
+      IF ValidScaleLabel.FINDLAST THEN BEGIN // ValidScaleLabel is the last Add Label sent to scale
+        // Need to find the last Delete Label sent to scale
+        ValidScaleLabel2.SETCURRENTKEY("Store No.","Scale No.","Item No.",Variant,"Unit of Measure","Valid on Date",Action);
+        ValidScaleLabel2.SETRANGE("Store No.",StoreNo);
+        ValidScaleLabel2.SETRANGE("Scale No.",ScaleItemSetup."Scale Code");
+        ValidScaleLabel2.SETRANGE("Item No.",ItemNo);
+        ValidScaleLabel2.SETRANGE(Variant,VariantCode);
+        ValidScaleLabel2.SETRANGE("Unit of Measure",UOM);
+        ValidScaleLabel2.SETRANGE(Action,ValidScaleLabel.Action::Delete);
+        ValidScaleLabel2.SETRANGE("Sent to Scale",TRUE);
+        IF ValidScaleLabel2.FINDLAST THEN BEGIN
+          IF ValidScaleLabel."Time Sent" > ValidScaleLabel2."Time Sent" THEN // If the latest command sent was Add, then send a delete command
+            DelScaleLabel(TODAY,ItemNo,StoreNo,ScaleItemSetup."Scale Code",VariantCode,UOM,ScaleItemSetup."Scale Format",ScaleItemSetup."Scale Group");
+        END ELSE
+          DelScaleLabel(TODAY,ItemNo,StoreNo,ScaleItemSetup."Scale Code",VariantCode,UOM,ScaleItemSetup."Scale Format",ScaleItemSetup."Scale Group");
+      END;
+    END;
+  UNTIL ScaleItemSetup.NEXT = 0;
+
+GetFilteredDateBuffer(ItemNo : Code[20];StoreNo : Code[10])
+//GetFilteredDateBuffer
+IF NOT DateBuffer.GET(ItemNo,0,StoreNo,TODAY,'','','',0) THEN BEGIN
+  DateBuffer."Sales Code" := StoreNo;
+  DateBuffer."Item No." := ItemNo;
+  DateBuffer."Starting Date" := TODAY;
+  DateBuffer.INSERT;
+
+  SalesPrice.SETRANGE("Item No.",ItemNo);
+  SalesPrice.SETRANGE("Sales Type",SalesPrice."Sales Type"::"Customer Price Group");
+  SalesPrice.SETFILTER("Starting Date",'%1..',TODAY);
+  IF SalesPrice.FINDSET THEN REPEAT
+    DateBuffer."Starting Date" := SalesPrice."Starting Date";
+    IF DateBuffer.INSERT THEN;
+    IF (SalesPrice."Ending Date" <> 0D) AND (SalesPrice."Ending Date" < 12319999D) THEN BEGIN
+      DateBuffer."Starting Date" := SalesPrice."Ending Date" + 1;
+      IF DateBuffer.INSERT THEN;
+    END;
+  UNTIL SalesPrice.NEXT = 0;
+
+  ScaleLabels.SETCURRENTKEY("Store No.","Scale No.","Item No.",Variant,"Unit of Measure","Valid on Date",Action);
+  ScaleLabels.SETRANGE("Store No.",StoreNo);
+  ScaleLabels.SETRANGE("Item No.",ItemNo);
+  ScaleLabels.SETFILTER("Valid on Date",'%1..',TODAY);
+  IF ScaleLabels.FINDSET THEN REPEAT
+    DateBuffer."Starting Date" := ScaleLabels."Valid on Date";
+    IF DateBuffer.INSERT THEN;
+  UNTIL ScaleLabels.NEXT = 0;
+
+  Item.GET(ItemNo);
+  DiscountBuffer.SETFILTER("Item No.",'%1|%2|%3|%4',Item."No.",Item."Item Category Code",Item."Product Group Code",'ALL');
+  IF DiscountBuffer.FINDSET THEN REPEAT
+    IF DiscountBuffer."Starting Date" <> 0D THEN BEGIN
+      DateBuffer."Starting Date" := DiscountBuffer."Starting Date";
+      IF DateBuffer.INSERT THEN;
+    END;
+    IF DiscountBuffer."Ending Date" <> 0D THEN BEGIN
+      DateBuffer."Starting Date" := DiscountBuffer."Ending Date" + 1;
+      IF DateBuffer.INSERT THEN;
+    END;
+  UNTIL DiscountBuffer.NEXT = 0;
+END;
+
+DateBuffer.RESET;
+DateBuffer.SETRANGE("Sales Code",StoreNo);
+DateBuffer.SETRANGE("Item No.",ItemNo);
+
+UpdScaleLabel(DateValid : Date;ItemNo : Code[20];StoreNo : Code[10];ScaleNo : Code[10];VariantCode : Code[10];UOM : Code[10];VAR ValidScaleLabel : Record "Scale Update Queue";Format : Code[10];ScaleGrp : Code[10])
+
+ScaleLabelandPoster."Store No." := StoreNo;
+ScaleLabelandPoster."Scale No." := ScaleNo;
+ScaleLabelandPoster."Item No." := ItemNo;
+ScaleLabelandPoster.Variant := VariantCode;
+ScaleLabelandPoster."Unit of Measure" := UOM;
+ScaleLabelandPoster."Valid on Date" := DateValid;
+ScaleLabelandPoster.CalculatePrice;
+ScaleLabelandPoster.Action := ScaleLabelandPoster.Action::Add;
+ScaleLabelandPoster."Scale Group" := ScaleGrp;
+
+IF ValidScaleLabel."Item No." = '' THEN BEGIN
+  TempLabelCommands.DELETEALL;
+  LabelDataChanged(ValidScaleLabel,ScaleLabelandPoster,Format,ScaleNo);
+  IF TempLabelCommands.FINDSET THEN
+    REPEAT
+      CreateScaleLabels(ItemNo,StoreNo,ScaleNo,DateValid,VariantCode,UOM,TempLabelCommands.Code,ScaleGrp);
+    UNTIL TempLabelCommands.NEXT = 0;
+  ValidScaleLabel.Price := ScaleLabelandPoster.Price;
+  ValidScaleLabel.Action := ScaleLabelandPoster.Action;
+  ValidScaleLabel."Barcode No." := ScaleLabelandPoster."Barcode No.";
+END ELSE BEGIN
+  IF ((DateValid = TODAY) AND SpecificOrder) OR
+     ((ValidScaleLabel.Price <> ScaleLabelandPoster.Price) OR
+      (ValidScaleLabel.Action <> ScaleLabelandPoster.Action) OR 
+      (ValidScaleLabel."Barcode No." <> ScaleLabelandPoster."Barcode No.") OR 
+      (ValidScaleLabel.PLU <> ScaleLabelandPoster.PLU))
+  THEN BEGIN
+    CreateScaleLabels(ItemNo,StoreNo,ScaleNo,DateValid,VariantCode,UOM,TempLabelCommands.Code,ScaleGrp);
+    ValidScaleLabel.Price := ScaleLabelandPoster.Price;
+    ValidScaleLabel.Action := ScaleLabelandPoster.Action;
+    ValidScaleLabel."Barcode No." := ScaleLabelandPoster."Barcode No.";
+  END ELSE BEGIN
+    //label orders exist but are not needed
+    IF ScaleLabelSetup.FINDFIRST THEN
+      REPEAT
+        ScaleLabelandPoster.RESET;
+        ScaleLabelandPoster.SETCURRENTKEY("Store No.","Scale No.","Item No.",Variant,"Unit of Measure","Valid on Date",Action);
+        ScaleLabelandPoster.SETRANGE("Store No.",StoreNo);
+        ScaleLabelandPoster.SETRANGE("Scale No.",ScaleNo);
+        ScaleLabelandPoster.SETRANGE("Item No.",ItemNo);
+        ScaleLabelandPoster.SETRANGE(Variant,VariantCode);
+        ScaleLabelandPoster.SETRANGE("Unit of Measure",UOM);
+        ScaleLabelandPoster.SETRANGE("Valid on Date",DateValid);
+        
+        IF ScaleLabelandPoster.FINDSET(TRUE,TRUE) THEN
+           REPEAT
+              IF NOT ScaleLabelandPoster."Sent to Scale" THEN BEGIN
+                ScaleLabel2 := ScaleLabelandPoster;
+                ScaleLabel2.DELETE;
+              END;
+           UNTIL ScaleLabelandPoster.NEXT = 0;
+
+      UNTIL ScaleLabelSetup.NEXT = 0;
+  END;
+END;
+
+FindScaleLabelSetup(ItemNo : Code[20];StoreNo : Code[10]) : Boolean
+//FindScaleLabelSetup
+
+// Prepare the Scales Buffer
+ScaleItemSetup.DELETEALL;
+Scales.SETRANGE("Store No.",StoreNo);
+IF Scales.FINDFIRST THEN
+  REPEAT
+    ScaleItemSetup := Scales;
+    ScaleItemSetup."Scale Use" := FALSE;
+    ScaleItemSetup."Scale Group" := '';
+    ScaleItemSetup.INSERT;
+  UNTIL Scales.NEXT = 0;
+  
+// Get the Item's Scale Setup
+ItemDistribution.SETRANGE(Type,ItemDistribution.Type::Store);
+ItemDistribution.SETRANGE("Item No.",ItemNo);
+
+StoreGroupSetup.SETCURRENTKEY("Store Code",Level);
+StoreGroupSetup.ASCENDING(FALSE);
+StoreGroupSetup.SETRANGE("Store Code",StoreNo);
+IF StoreGroupSetup.FINDSET THEN REPEAT
+  ItemDistribution.SETRANGE(Code,StoreGroupSetup."Store Group");
+  IF ItemDistribution.FINDFIRST THEN BEGIN
+    ScaleGroupMap.SETRANGE("Store No.",StoreNo);
+    ScaleGroupMap.SETRANGE("Scale Group",ItemDistribution."Scale Group");
+    IF ScaleGroupMap.FINDFIRST THEN
+      REPEAT
+        ScaleItemSetup.GET(StoreNo,ScaleGroupMap."Scale Code");
+        ScaleItemSetup."Scale Use" := ItemDistribution."Scale Use"; // Mark scales where item must be on as True, all other scales as false
+        ScaleItemSetup."Scale Group" := ItemDistribution."Scale Group";
+        ScaleItemSetup.MODIFY;
+      UNTIL ScaleGroupMap.NEXT = 0;
+      EXIT(TRUE);
+  END;
+UNTIL StoreGroupSetup.NEXT = 0;
+
+EXIT(FALSE);
+
+LabelDataChanged(VAR ScaleLabelandPoster1 : Record "Scale Update Queue";ScaleLabelandPoster2 : Record "Scale Update Queue";Format : Code[10];ScaleNo : Code[10]) : Boolean
+//LabelDataChanged
+IF ((DateBuffer."Starting Date" = TODAY) AND SpecificOrder) OR
+  NOT GetValidLabelInfo(ScaleLabelandPoster2."Item No.",ScaleLabelandPoster2."Store No.",ScaleNo,ScaleLabelandPoster2.Variant,
+  ScaleLabelandPoster2."Unit of Measure",DateBuffer."Starting Date",ScaleLabelandPoster1)
+THEN BEGIN
+  TempLabelCommands.Code := Format;
+  IF TempLabelCommands.INSERT THEN;
+END ELSE BEGIN
+  ScaleLabelandPoster2.InitRecord;
+  IF (ScaleLabelandPoster1."Barcode No." <> ScaleLabelandPoster2."Barcode No.") OR
+     (ScaleLabelandPoster1.Price <> ScaleLabelandPoster2.Price) OR
+     (ScaleLabelandPoster1.PLU <> ScaleLabelandPoster2.PLU)
+  THEN BEGIN
+     TempLabelCommands.Code := Format;
+     IF TempLabelCommands.INSERT THEN;
+  END;
+END;
+
+EXIT(TempLabelCommands.FINDFIRST);
+
+GetValidLabelInfo(ItemNo : Code[20];StoreNo : Code[10];ScaleNo : Code[10];VariantCode : Code[10];UOM : Code[10];DateValid : Date;VAR ValidScaleLabel : Record "Scale Update Queue") : Boolean
+//GetValidLabelInfo
+
+ValidScaleLabel.SETCURRENTKEY("Store No.","Scale No.","Item No.",Variant,"Unit of Measure","Valid on Date",Action);
+ValidScaleLabel.SETRANGE("Store No.",StoreNo);
+ValidScaleLabel.SETRANGE("Scale No.", ScaleNo);
+ValidScaleLabel.SETRANGE("Item No.",ItemNo);
+ValidScaleLabel.SETRANGE(Variant,VariantCode);
+ValidScaleLabel.SETRANGE("Unit of Measure",UOM);
+ValidScaleLabel.SETFILTER("Valid on Date",'<=%1',DateValid);
+ValidScaleLabel.SETRANGE(Action,ValidScaleLabel.Action::Add);
+EXIT(ValidScaleLabel.FINDLAST);
+
+CreateScaleLabels(ItemNo : Code[20];StoreNo : Code[10];ScaleNo : Code[10];DateValid : Date;Variant : Code[10];UOM : Code[10];Format : Code[10];ScaleGrp : Code[10])
+//CreateScaleLabels
+
+IF (ScaleLabel."Barcode No." = '') OR (ScaleLabel.PLU = '') THEN BEGIN
+  ScaleLabel."Barcode No." := GetBarcode(ItemNo,Variant,UOM);
+  IF NOT Barcode.GET(ScaleLabel."Barcode No.") THEN
+    EXIT;
+  ScaleLabel.PLU := Barcode.PLU;
+END;
+IF ScaleLabel.GET(StoreNo,ScaleNo,ScaleLabel.PLU,DateValid,ScaleLabel.Action::Add,Format) THEN BEGIN
+  ScaleLabel.InitRecord;
+  ScaleLabel."Scale Group" := ScaleGrp;
+  ScaleLabel."Sent to Scale" := FALSE;
+  ScaleLabel."Time Sent" := 0DT;
+  ScaleLabel.MODIFY;
+END ELSE BEGIN
+  CLEAR(ScaleLabel);
+  ScaleLabel."Store No." := StoreNo;
+  ScaleLabel."Scale No." := ScaleNo;
+  ScaleLabel.Action := ScaleLabel.Action::Add;
+  ScaleLabel."Item No." := ItemNo;
+  ScaleLabel.Variant := Variant;
+  ScaleLabel."Unit of Measure" := UOM;
+  ScaleLabel."Valid on Date" := DateValid;
+  ScaleLabel."Scale Format" := Format;
+  ScaleLabel."Scale Group" := ScaleGrp;
+  ScaleLabel.InitRecord;
+  ScaleLabel.INSERT;
+END;
+ScaleLabelCounter += 1;
+
+LOCAL DelScaleLabel(DateValid : Date;ItemNo : Code[20];StoreNo : Code[10];ScaleNo : Code[10];Variant : Code[10];UOM : Code[10];Format : Code[10];ScaleGroup : Code[10])
+
+ScaleLabel."Store No." := StoreNo;
+ScaleLabel."Scale No." := ScaleNo;
+ScaleLabel.Action := ScaleLabel.Action::Delete;
+ScaleLabel."Item No." := ItemNo;
+ScaleLabel.Variant := Variant;
+ScaleLabel."Unit of Measure" := UOM;
+ScaleLabel."Valid on Date" := DateValid;
+ScaleLabel."Scale Format" := Format;
+ScaleLabel."Scale Group" := ScaleGroup;
+ScaleLabel.InitRecord;
+IF ScaleLabel.INSERT THEN;
+ScaleLabelCounter += 1;
+
+GetBarcode(ItemNo : Code[20];VariantCode : Code[10];UOM : Code[10]) : Code[22]
+//GetBarcode
+
+Barcodes.SETCURRENTKEY("Item No.","Variant Code","Unit of Measure Code");
+Barcodes.SETRANGE("Item No.",ItemNo);
+Item.GET(ItemNo);
+Barcodes.SETRANGE("Variant Code",VariantCode);
+IF UOM = '' THEN
+  Barcodes.SETFILTER("Unit of Measure Code",'%1|%2',UOM,Item."Sales Unit of Measure")
+ELSE
+  Barcodes.SETRANGE("Unit of Measure Code",UOM);
+Barcodes.SETRANGE("Show for Item",TRUE);
+IF Barcodes.FINDFIRST THEN
+  EXIT(Barcodes."Barcode No.")
+ELSE BEGIN
+  Barcodes.SETRANGE("Show for Item",FALSE);
+  IF Barcodes.FINDFIRST THEN
+    EXIT(Barcodes."Barcode No.");
+END;
+
+EXIT('');

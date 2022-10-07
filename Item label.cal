@@ -1,0 +1,185 @@
+Documentation()
+LS-5337 BLL - Use Item Label in the InitPrint function
+
+OnRun(VAR Rec : Record "Item Label")
+ItemLabelRec.COPYFILTERS(Rec);
+IF ItemLabelRec.FINDSET THEN BEGIN
+  LabelFunctions.GET(LabelFunctions.Type::"Item Label",ItemLabelRec."Label Code");
+  InitPrint(ItemLabelRec."Label Code");
+
+  IF LabelFunctions."Print to File" THEN
+    CreateFile
+  ELSE BEGIN
+    // Create instance of TcpClient class and connect
+    TcpClient := TcpClient.TcpClient();
+    IF NOT TryConnect THEN BEGIN
+      Timer := TIME;  
+      Counter := 1;
+      WHILE TIME <= (Timer + 10000) DO BEGIN // try connectig every 2 seconds for 10 seconds
+        IF TIME > (Timer + (2000 * Counter)) THEN BEGIN
+          IF TryConnect THEN
+            BREAK;
+          Counter := Counter + 1;
+        END;    
+      END;
+      IF NOT TcpClient.Connected THEN
+        ERROR('Cannot connect printer. Either printer is in use or it is not connected.');  
+    END;
+    StreamWriter := StreamWriter.StreamWriter(TcpClient.GetStream(), Encoding.UTF8);
+  END;
+
+  REPEAT
+    SetItemParameters(ItemLabelRec);
+    WriteLine(LineEnd);
+    WriteLine('N' + LineEnd);
+    WriteLine('q720' + LineEnd);
+    WriteLine('Q560,32' + LineEnd);
+    IF STRLEN(ItemLabelRec."Text 1") > 0 THEN
+      WriteLine('A20,250,0,3,2,4,N,"' + COPYSTR(ItemLabelRec."Text 1",1,22) + '"' + LineEnd);  //T21
+    WriteLine('B60,32,0,' + GetBarcodeType(ItemLabelRec."Barcode No.") + ',2,2,60,B,"' + ItemLabelRec."Barcode No." + '"'+LineEnd);  //T4
+    
+    
+    IF LabelFunctions."Print to File" THEN
+      WriteLine(LineEnd)// ******* (NEED TO BE FILLED) WriteLine like you did in the shelf label, so normal text with UTF8 encoding
+    ELSE BEGIN
+      width := 0;
+      height := 0;
+      IF STRLEN(ItemLabelRec."Text 3") > 0 THEN BEGIN
+        Image := ArabicToImage.ConvertStringToImage(ItemLabelRec."Text 3",'Arial',9,width,height);
+        WriteLine('GW20,32,' + FORMAT(width/8) + ',' + FORMAT(height) + ',' + Image + '"' + LineEnd);
+      END;
+    END;
+    
+    WriteLine('P' + FORMAT(ItemLabelRec.Quantity)+LineEnd);
+    WriteLine('N' + LineEnd);
+    WriteLine(LineEnd);
+    UpdateLabelStatus;
+  UNTIL ItemLabelRec.NEXT = 0;
+
+  IF LabelFunctions."Print to File" THEN
+    CloseFile
+  ELSE BEGIN
+    StreamWriter.Close();
+    TcpClient.Close();
+  END;
+END ELSE
+  ERROR(Text001 + ' ' + ItemLabelRec.GETFILTERS);
+
+SetItemParameters(VAR LabelRec : Record "Item Label")
+Item.GET(LabelRec."Item No.");
+SalesAmountText := '';
+
+IF LabelRec."Price on Item Label" = 0 THEN
+  LabelRec."Price on Item Label" := RetailPriceUtil.GetValidRetailPrice2(LabelRec."Store No.",LabelRec."Item No.",
+    LabelRec."Label Is Valid on Date",TIME,LabelRec."Unit of Measure",LabelRec.Variant,'','','','','');
+
+SalesAmountText := FORMAT(LabelRec."Price on Item Label",0,'<Integer><Decimal,3>');
+
+InitPrint(LabelCode : Code[20])
+CR := 13;
+LF := 10;
+LineEnd := FORMAT(CR)+FORMAT(LF);
+
+//LS-5337 IF LabelPrinter.GET('',LabelPrinter."Label Type"::"Shelf Label",LabelCode) THEN
+IF LabelPrinter.GET('',LabelPrinter."Label Type"::"Item Label",LabelCode) THEN BEGIN //LS-5337
+  PrinterName := LabelPrinter."Printer Name";
+  PrinterIPAddress := LabelPrinter."Printer IP Address"; // YB - 14/06/18
+END;
+IF LabelPrinter.GET(USERID,LabelPrinter."Label Type"::"Item Label",LabelCode) THEN BEGIN
+  PrinterName := LabelPrinter."Printer Name";
+  PrinterIPAddress := LabelPrinter."Printer IP Address"; // YB - 14/06/18
+END;
+
+IF ISNULL(LabelPrint) THEN
+  LabelPrint := LabelPrint.PrintUtil;
+
+IF ISNULL(LabelPrint) THEN
+  ERROR(Text003);
+
+WriteLine(EPL_Line : Text)
+IF LabelFunctions."Print to File" THEN
+  SaveLine(EPL_Line)
+ELSE
+  StreamWriter.WriteLine(EPL_Line); // YB - 14/06/2018
+
+PrintLine(EPL_Line : Text)
+IF NOT LabelPrint.PrintString(PrinterName,EPL_Line) THEN
+  ERROR(Text003);
+
+SaveLine(EPL_Line : Text)
+dotNetFile.AppendAllText(ISOFileName,EPL_Line);
+
+CreateFile()
+ISOFileName := FileMgt.ServerTempFileName('txt');
+
+CloseFile()
+dotNetArray := dotNetFile.ReadAllLines(ISOFileName);
+dotNetFile.WriteAllLines(ISOFileName,dotNetArray);
+
+MESSAGE(STRSUBSTNO(Text004,CONVERTSTR(ISOFileName,'\','/')));
+
+AlignAmount(Amount : Integer) : Text
+CASE Amount OF
+  0..9 : EXIT(FORMAT(560));
+  10..99 : EXIT(FORMAT(450));
+  100..999 : EXIT(FORMAT(340));
+  1000..9999 : EXIT(FORMAT(230));
+  10000..99999 : EXIT(FORMAT(120));
+  100000..999999 : EXIT(FORMAT(10));
+END;
+
+GetBarcodeType(BarcodeNo : Code[20]) : Code[3]
+
+IF COPYSTR(BarcodeNo,1,1) <> '2' THEN BEGIN
+  CASE STRLEN(BarcodeNo) OF
+    8:
+      IF COPYSTR(BarcodeNo,1,2) = '00' THEN
+        BarcodeType := 'E80'                                // Internal EAN barcode
+      ELSE IF COPYSTR(BarcodeNo,1,1) = '0' THEN
+        BarcodeType := 'UE0'                                // UPC-E code(1)
+      ELSE
+        IF Code2Int(COPYSTR(BarcodeNo,1,2)) >= 30 THEN
+          BarcodeType := 'E80'                              // EAN 8 code(3)
+        ELSE
+          BarcodeType := '1';                               // Code 128
+    11:
+       IF COPYSTR(BarcodeNo,1,1) = '0' THEN
+         BarcodeType := 'UA0'                               // UPC-A code(4)
+       ELSE
+         BarcodeType := '1';                                // Code 128
+    12:
+       BarcodeType := 'UA0';                              // Code 128
+    13:
+       IF (Code2Int(COPYSTR(BarcodeNo,1,2)) >= 30) OR (Code2Int(COPYSTR(BarcodeNo,1,2)) <= 19) THEN
+         BarcodeType := 'E30'                               // EAN 13 code(5)
+       ELSE
+         BarcodeType := '1';                              // Code 128
+    1..7,9,10,14..22:
+       BarcodeType := '1';                                  // Code 128
+  END;
+END;
+
+IF (COPYSTR(BarcodeNo,1,1) = '2') THEN BEGIN
+  IF (STRLEN(BarcodeNo) = 12) OR (STRLEN(BarcodeNo) = 13) THEN   // *** instorecode
+    BarcodeType := 'E30'
+  ELSE
+    BarcodeType := '1';
+END;
+
+EXIT(BarcodeType);
+
+Code2Int(pCode : Code[10]) : Integer
+IF NOT EVALUATE(xInt,pCode) THEN
+  xInt := 0;
+EXIT(xInt);
+
+UpdateLabelStatus()
+ItemLabelPoster2 := ItemLabelRec;
+ItemLabelPoster2.Printed := TRUE;
+ItemLabelPoster2."Date Last Printed" := TODAY;
+ItemLabelPoster2."Time Last Printed" := TIME;
+ItemLabelPoster2.MODIFY;
+
+LOCAL [TryFunction] TryConnect()
+//TcpClient.Connect(PrinterIPAddress, 9100);
+TcpClient.Connect('127.0.0.1', 23);

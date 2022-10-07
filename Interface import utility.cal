@@ -1,0 +1,700 @@
+Documentation()
+Import interface from Dolphin
+
+OnRun(VAR Rec : Record "Scheduler Job Header")
+
+SchHdr := Rec;
+
+RetailSetup.GET;
+FrameCode := 'OFFER';
+DefBaseValue := 'BASE';
+FindVariantDimension;
+
+ProcessDivision;
+ProcessItemCategory;
+ProcessProductGroup;
+ProcessUOM;
+ProccessCompUOM;
+ProcessAttibute;
+ProcessVariants;
+COMMIT;
+
+ProcessItem;
+ProcessBarcodes;
+ProcessPrices;
+ProcessDistribution;
+
+SchHdr."Last Message Text" := 'Success';
+SchHdr.MODIFY;
+COMMIT;
+Rec := SchHdr;
+
+LOCAL ProcessDivision()
+// Insert
+Division.SETRANGE(Inserted,TRUE);
+IF Division.FINDSET THEN BEGIN
+  REPEAT
+    Division.VALIDATE(Description);
+    Division.InsertCode;
+    Division.Inserted := FALSE;
+    Division.MODIFY(FALSE);
+  UNTIL Division.NEXT = 0;
+END;
+
+// Modify
+Division.RESET;
+Division.SETRANGE(Modified,TRUE);
+IF Division.FINDSET THEN BEGIN
+  REPEAT
+    Division.VALIDATE(Description);
+    Division.Modified := FALSE;
+    Division.MODIFY(TRUE);
+  UNTIL Division.NEXT = 0;
+END;
+
+// Delete
+Division.RESET;
+Division.SETRANGE(Deleted,TRUE);
+IF Division.FINDSET THEN
+  Division.DELETEALL(TRUE);
+
+LOCAL ProcessItemCategory()
+// Insert
+ItemCat.SETCURRENTKEY(Inserted);
+ItemCat.SETRANGE(Inserted,TRUE);
+IF ItemCat.FINDSET THEN
+  REPEAT
+    ItemCat.InsertCode;
+    ItemCat.VALIDATE(Description);
+    ItemCat.Inserted := FALSE;
+    ItemCat.MODIFY(FALSE);
+  UNTIL ItemCat.NEXT = 0;
+
+// Modify
+ItemCat.RESET;
+ItemCat.SETCURRENTKEY(Modified);
+ItemCat.SETRANGE(Modified,TRUE);
+IF ItemCat.FINDSET THEN
+  REPEAT
+    ItemCat.VALIDATE(Description);
+    ItemCat.Modified := FALSE;
+    ItemCat.MODIFY(TRUE);
+  UNTIL ItemCat.NEXT = 0;
+
+// Delete
+ItemCat.RESET;
+ItemCat.SETCURRENTKEY(Deleted);
+ItemCat.SETRANGE(Deleted,TRUE);
+IF ItemCat.FINDSET THEN
+  ItemCat.DELETEALL(TRUE);
+
+ProcessProductGroup()
+// Insert
+ProductGrp.SETCURRENTKEY(Inserted);
+ProductGrp.SETRANGE(Inserted,TRUE);
+IF ProductGrp.FINDSET THEN
+  REPEAT
+    ProductGrp.InsertCode;
+    ProductGrp.VALIDATE(Description);
+    ProductGrp."Use EAN Standard Barc." := TRUE;
+    ProductGrp.Inserted := FALSE;
+    ProductGrp.MODIFY(FALSE);
+    // Inserting Default Item label
+    DefLabel.SETRANGE(Type,DefLabel.Type::"Item Label");
+    DefLabel.SETRANGE("Item Category",'');
+    DefLabel.SETRANGE("Product Group",'');
+    IF DefLabel.FINDSET THEN REPEAT
+      PrdGrpLabel.RESET;
+      PrdGrpLabel.INIT;
+      PrdGrpLabel := DefLabel;
+      PrdGrpLabel."Item Category" := ProductGrp."Item Category Code";
+      PrdGrpLabel."Product Group" := ProductGrp.Code;
+      PrdGrpLabel.INSERT(TRUE);   
+    UNTIL DefLabel.NEXT = 0;
+    // Inserting Default Shelf Label
+    IF ProductGrp."Division Code" <> '05' THEN BEGIN // Fresh items do not get shelf labels
+      DefLabel.RESET;
+      DefLabel.SETRANGE(Type,DefLabel.Type::"Shelf Label");
+      DefLabel.SETRANGE("Item Category",'');
+      DefLabel.SETRANGE("Product Group",'');
+      IF DefLabel.FINDSET THEN REPEAT
+        PrdGrpLabel.RESET;
+        PrdGrpLabel.INIT;
+        PrdGrpLabel := DefLabel;
+        PrdGrpLabel."Item Category" := ProductGrp."Item Category Code";
+        PrdGrpLabel."Product Group" := ProductGrp.Code;
+        PrdGrpLabel.INSERT(TRUE);
+      UNTIL DefLabel.NEXT = 0;        
+    END;
+  UNTIL ProductGrp.NEXT = 0;
+
+// Modify
+ProductGrp.RESET;
+ProductGrp.SETCURRENTKEY(Modified);
+ProductGrp.SETRANGE(Modified,TRUE);
+IF ProductGrp.FINDSET THEN
+  REPEAT
+    ProductGrp.VALIDATE(Description);
+    ProductGrp.Modified := FALSE;
+    ProductGrp.ModifyCode;    
+    ProductGrp.MODIFY(FALSE);
+  UNTIL ProductGrp.NEXT = 0;
+
+// Delete
+ProductGrp.RESET;
+ProductGrp.SETCURRENTKEY(Deleted);
+ProductGrp.SETRANGE(Deleted,TRUE);
+IF ProductGrp.FINDSET THEN
+  ProductGrp.DELETEALL(TRUE);
+
+LOCAL ProccessCompUOM()
+// Insert
+CompUOM.SETRANGE(Inserted,TRUE);
+IF CompUOM.FINDSET THEN
+  REPEAT
+    CompUOM.Inserted := FALSE;
+    CompUOM.InsertCode;
+    CompUOM.MODIFY(FALSE);
+  UNTIL CompUOM.NEXT = 0;
+
+// Modify
+CompUOM.RESET;
+CompUOM.SETRANGE(Modified,TRUE);
+IF CompUOM.FINDSET THEN
+  REPEAT
+    CompUOM.Modified := FALSE;
+    CompUOM.MODIFY(TRUE);
+  UNTIL CompUOM.NEXT = 0;
+
+// Delete
+CompUOM.RESET;
+CompUOM.SETRANGE(Deleted,TRUE);
+IF CompUOM.FINDSET THEN
+  CompUOM.DELETEALL(TRUE);
+
+LOCAL ProcessUOM()
+// Insert
+UOM.SETCURRENTKEY(Inserted);
+UOM.SETRANGE(Inserted,TRUE);
+IF UOM.FINDSET THEN
+  REPEAT
+    UOM.CreateAction(0);
+    UOM.Inserted := FALSE;
+    UOM.MODIFY(FALSE);
+  UNTIL UOM.NEXT = 0;
+  
+// Modify
+UOM.RESET;
+UOM.SETCURRENTKEY(Modified);
+UOM.SETRANGE(Modified,TRUE);
+IF UOM.FINDSET THEN
+  REPEAT
+    UOM.Modified := FALSE;
+    UOM.MODIFY(TRUE);
+  UNTIL UOM.NEXT = 0;
+
+// Delete
+UOM.RESET;
+UOM.SETCURRENTKEY(Deleted);
+UOM.SETRANGE(Deleted,TRUE);
+IF UOM.FINDSET THEN
+  UOM.DELETEALL(TRUE);
+
+LOCAL ProcessAttibute()
+// Insert
+Attribute.SETCURRENTKEY(Inserted);
+Attribute.SETRANGE(Inserted,TRUE);
+IF Attribute.FINDSET THEN
+  REPEAT
+    Attribute.CreateAction(0);
+    Attribute.Inserted := FALSE;
+    Attribute.MODIFY(FALSE);
+  UNTIL Attribute.NEXT = 0;
+
+// Modify
+Attribute.RESET;
+Attribute.SETCURRENTKEY(Modified);
+Attribute.SETRANGE(Modified,TRUE);
+IF Attribute.FINDSET THEN
+  REPEAT
+    Attribute.Modified := FALSE;
+    Attribute.MODIFY(TRUE);
+  UNTIL Attribute.NEXT = 0;
+
+// Delete
+Attribute.RESET;
+Attribute.SETCURRENTKEY(Deleted);
+Attribute.SETRANGE(Deleted,TRUE);
+IF Attribute.FINDSET THEN
+  Attribute.DELETEALL(TRUE);
+
+LOCAL ProcessVariants()
+// Insert
+IntVariant.SETCURRENTKEY(Inserted);
+IntVariant.SETRANGE(Inserted,TRUE);
+IF IntVariant.FINDSET THEN
+  REPEAT
+    IF VarValue.GET(FrameCode,'',DimCode,IntVariant."Variant Description",'') THEN BEGIN
+      IntVariant.Inserted := FALSE;
+      IntVariant.MODIFY(FALSE);
+    END ELSE BEGIN
+      VarValue.RESET;
+      VarValue.INIT;
+      VarValue."Framework Code" := FrameCode;
+      VarValue.Code := DimCode;
+      VarValue.Value := IntVariant."Variant Description";
+      VarValue.Dimension := DimNo;
+      VarValue."Default UOM" := IntVariant."Default UOM";
+      IF VarValue.INSERT(TRUE) THEN BEGIN    
+        IntVariant.Inserted := FALSE;
+        IntVariant.MODIFY(FALSE);
+      END;
+    END;
+  UNTIL IntVariant.NEXT = 0;
+
+// Modify
+IntVariant.RESET;
+IntVariant.SETCURRENTKEY(Modified);
+IntVariant.SETRANGE(Modified, TRUE);
+IF IntVariant.FINDSET THEN
+  REPEAT
+    IF VarValue.GET(FrameCode,'',DimCode,IntVariant."Variant Description",'') THEN BEGIN
+      VarValue.VALIDATE("Default UOM", IntVariant."Default UOM");
+      VarValue.MODIFY(TRUE);
+      IntVariant.Modified := FALSE;
+      IntVariant.MODIFY(FALSE);
+    END;
+  UNTIL IntVariant.NEXT = 0;
+
+// Delete
+// cannot be implemented at this point as it needs to be watched for whether it's linked to items first which could have transactions
+
+LOCAL ProcessItem()
+// Insert
+IntItem.SETCURRENTKEY(Inserted);
+IntItem.SETRANGE(Inserted,TRUE);
+IF IntItem.FINDSET THEN
+  REPEAT
+    IF Item.GET(IntItem."No.") THEN BEGIN
+      IntItem.Inserted := FALSE;
+      IntItem.Modified := TRUE;
+      IntItem.MODIFY(FALSE);
+    END ELSE BEGIN
+      Item.RESET;
+      Item.INIT;
+      Item."No." := IntItem."No.";
+      Item.INSERT(TRUE);
+      Item."Date Created" := IntItem."Date Created";
+      Item.VALIDATE("Attrib 1 Code",IntItem.Brand);
+      Item."Base Description" := IntItem."Base Description";
+      Item."Char. Description" := IntItem."Char. Description";
+      Item.Singles := IntItem.Singles;
+      Item."Qty. per Base Comp. Unit" := IntItem."Qty. per Base Comp. Unit";
+      Item.VALIDATE("Base Comp. Unit Code", IntItem."Base Comp. Unit Code");
+      Item.VALIDATE("Arabic Description", IntItem."Arabic Description");
+      Item.VALIDATE("Division Code",IntItem."Division Code");
+      Item.VALIDATE("Item Category Code",IntItem."Item Category Code");
+      Item.VALIDATE("Product Group Code", IntItem."Product Group Code");
+      Item.VALIDATE("Base Unit of Measure",IntItem."Base Unit of Measure");
+      //IF IntItem."Base Unit of Measure" <> IntItem."Purch. Unit of Measure" THEN BEGIN
+      //  AddItemUOM(IntItem."No.",IntItem."Purch. Unit of Measure");
+      //  Item.VALIDATE("Purch. Unit of Measure",IntItem."Purch. Unit of Measure");
+      //END;
+      Item.VALIDATE("Barcode Mask",IntItem."Barcode Mask");
+      Item."Inventory Posting Group" := IntItem."Inventory Posting Group";
+      Item."Gen. Prod. Posting Group" := IntItem."Gen. Prod. Posting Group";
+      Item.VALIDATE("VAT Prod. Posting Group",IntItem."VAT Prod. Posting Group");
+      Item.VALIDATE("Variant Framework Code",IntItem."Variant Framework Code");
+      Item.MODIFY(TRUE);
+      IntItem.Inserted := FALSE;
+      IntItem."Last Imported" := CURRENTDATETIME;
+      IntItem.MODIFY(FALSE);
+    END;
+  UNTIL IntItem.NEXT = 0;
+
+// Modify
+IntItem.RESET;
+IntItem.SETCURRENTKEY(Modified);
+IntItem.SETRANGE(Modified,TRUE);
+IF IntItem.FINDSET THEN
+  REPEAT
+    IF Item.GET(IntItem."No.") THEN BEGIN
+      IF Item."Attrib 1 Code" <> IntItem.Brand THEN
+         Item.VALIDATE("Attrib 1 Code",IntItem.Brand);      
+      IF (Item."Base Description" <> IntItem."Base Description") OR (Item."Char. Description" <> IntItem."Char. Description") OR
+         (Item.Singles <> IntItem.Singles) OR (Item."Qty. per Base Comp. Unit" <> IntItem."Qty. per Base Comp. Unit") OR (Item."Base Comp. Unit Code" <> IntItem."Base Comp. Unit Code") THEN BEGIN
+        Item."Base Description" := IntItem."Base Description";
+        Item."Char. Description" := IntItem."Char. Description";
+        Item.Singles := IntItem.Singles;
+        Item."Qty. per Base Comp. Unit" := IntItem."Qty. per Base Comp. Unit";
+        Item.VALIDATE("Base Comp. Unit Code", IntItem."Base Comp. Unit Code");
+      END;
+      Item."Arabic Description" := IntItem."Arabic Description";
+      IF (Item."Division Code" <> IntItem."Division Code") OR (Item."Item Category Code" <> IntItem."Item Category Code") OR (Item."Product Group Code" <> IntItem."Product Group Code") THEN BEGIN
+        Item.VALIDATE("Division Code",IntItem."Division Code");
+        Item.VALIDATE("Item Category Code",IntItem."Item Category Code");
+        Item.VALIDATE("Product Group Code", IntItem."Product Group Code");
+      END;
+      //IF Item."Purch. Unit of Measure" <> IntItem."Purch. Unit of Measure" THEN BEGIN
+      //  AddItemUOM(IntItem."No.",IntItem."Purch. Unit of Measure");
+      //  Item.VALIDATE("Purch. Unit of Measure",IntItem."Purch. Unit of Measure");
+      //END;
+      IF Item."Barcode Mask" <> IntItem."Barcode Mask" THEN
+        Item.VALIDATE("Barcode Mask",IntItem."Barcode Mask");
+      IF Item."Variant Framework Code" <> IntItem."Variant Framework Code" THEN
+        Item.VALIDATE("Variant Framework Code",IntItem."Variant Framework Code");
+      IF (Item."Inventory Posting Group" <> IntItem."Inventory Posting Group") OR (Item."Gen. Prod. Posting Group" <> IntItem."Gen. Prod. Posting Group") OR (Item."VAT Prod. Posting Group" <> IntItem."VAT Prod. Posting Group") THEN BEGIN
+        Item."Inventory Posting Group" := IntItem."Inventory Posting Group";
+        Item."Gen. Prod. Posting Group" := IntItem."Gen. Prod. Posting Group";
+        Item.VALIDATE("VAT Prod. Posting Group",IntItem."VAT Prod. Posting Group");
+        PostingGrpChange := TRUE;
+      END;
+      Item.MODIFY(TRUE);
+      IF PostingGrpChange THEN BEGIN
+        SalesPrice.SETRANGE("Item No.",IntItem."No.");
+        SalesPrice.SETRANGE("Sales Type",SalesPrice."Sales Type"::"Customer Price Group");
+        SalesPrice.SETFILTER("Ending Date",'%1|>=%2',0D,TODAY);
+        IF SalesPrice.FINDSET THEN REPEAT
+          SalesPrice.VALIDATE("Unit Price Including VAT");
+          SalesPrice.MODIFY(TRUE);
+        UNTIL SalesPrice.NEXT = 0;
+      END;
+      IntItem.Modified := FALSE;
+      IntItem."Last Imported" := CURRENTDATETIME;
+      IntItem.MODIFY(FALSE);
+    END;
+  UNTIL IntItem.NEXT = 0;
+
+// Delete
+IntItem.RESET;
+IntItem.SETCURRENTKEY(Deleted);
+IntItem.SETRANGE(Deleted,TRUE);
+IF IntItem.FINDSET THEN
+  REPEAT
+    IF Item.GET(IntItem."No.") THEN BEGIN
+      IF Item.CheckDelete THEN BEGIN
+        Item.DELETE(TRUE);
+        IntItem.DELETE(FALSE);
+      END ELSE BEGIN
+        ItemCrossReference.RESET;
+        ItemCrossReference.SETCURRENTKEY("Item No.");
+        ItemCrossReference.SETRANGE("Item No.",IntItem."No.");
+        ItemCrossReference.DELETEALL(TRUE);
+
+        Barcodes.RESET;
+        Barcodes.SETCURRENTKEY("Item No.");
+        Barcodes.SETRANGE("Item No.",IntItem."No.");
+        Barcodes.DELETEALL(TRUE);
+
+        Item.VALIDATE(Blocked, TRUE);
+
+        IntItem.Deleted := FALSE;
+        IntItem."Last Imported" := CURRENTDATETIME;
+        IntItem.MODIFY(FALSE);     
+      END;
+    END;
+  UNTIL IntItem.NEXT = 0;
+
+LOCAL ProcessBarcodes()
+// Insert
+IntBcode.SETCURRENTKEY(Inserted);
+IntBcode.SETRANGE(Inserted,TRUE);
+IF IntBcode.FINDSET THEN
+  REPEAT
+    IF Counter = 1000 THEN BEGIN
+      COMMIT;
+      Counter := 0;
+    END;
+    
+    // Processing Variant
+    BaseUOM := FindVariantValueBaseUOM(IntBcode."Variant Description");
+    VarCode := GetVarCode(IntBcode."Item No.",IntBcode."Variant Description",IntBcode."Variant Framework Code",
+                          BaseUOM,IntBcode."Unit of Measure");
+    UpdateVariantArabicDesc(IntBcode."Item No.",VarCode,BaseUOM,IntBcode."Arabic Description");    
+
+    // Processing Barcode
+    IF Barcodes.GET(IntBcode."Barcode No.") THEN BEGIN
+      IntBcode.Inserted := FALSE;
+      IntBcode.Modified := TRUE;
+      IntBcode.MODIFY(FALSE);
+    END ELSE BEGIN
+      Barcodes.RESET;
+      Barcodes.INIT;
+      Barcodes."Barcode No." := IntBcode."Barcode No.";
+      Barcodes."Item No." := IntBcode."Item No.";
+      Barcodes."Variant Code" := VarCode;
+      Barcodes.VALIDATE("Barcode No.");
+      Barcodes.VALIDATE("Variant Code");
+      Barcodes."Unit of Measure Code" := IntBcode."Unit of Measure";
+      Barcodes."Arabic Description" := IntBcode."Arabic Description";
+      Barcodes.PLU := IntBcode.PLU;
+      Barcodes."Dolphin Item No." := IntBcode."Dolphin Item No.";
+      Barcodes."Date Created" := IntBcode."Date Created";
+      IF Barcodes.INSERT(TRUE) THEN BEGIN
+        IntBcode.Inserted := FALSE;
+        IntBcode.MODIFY(FALSE);
+        Counter := Counter + 1;
+      END;
+    END;
+  UNTIL IntBcode.NEXT = 0;
+
+// Modify
+IntBcode.RESET;
+IntBcode.SETCURRENTKEY(Modified);
+IntBcode.SETRANGE(Modified,TRUE);
+IF IntBcode.FINDSET THEN
+  REPEAT
+    IF Barcodes.GET(IntBcode."Barcode No.") THEN BEGIN
+      // Processing Variant
+      BaseUOM := FindVariantValueBaseUOM(IntBcode."Variant Description");
+      VarCode := GetVarCode(IntBcode."Item No.",IntBcode."Variant Description",IntBcode."Variant Framework Code",
+                          BaseUOM,IntBcode."Unit of Measure");
+      IF (Barcodes."Item No." <> IntBcode."Item No.") OR (Barcodes."Variant Code" <> VarCode) THEN BEGIN
+        Barcodes."Item No." := IntBcode."Item No.";
+        Barcodes."Variant Code" := VarCode;
+        Barcodes.VALIDATE("Barcode No.");
+        Barcodes.VALIDATE("Variant Code");
+        Barcodes."Unit of Measure Code" := IntBcode."Unit of Measure";
+        Barcodes."Arabic Description" := IntBcode."Arabic Description";
+        UpdateVariantArabicDesc(IntBcode."Item No.",VarCode,BaseUOM,IntBcode."Arabic Description");
+        Barcodes.PLU := IntBcode.PLU;
+        Barcodes."Dolphin Item No." := IntBcode."Dolphin Item No.";
+        Barcodes."Date Created" := IntBcode."Date Created";        
+      END ELSE BEGIN
+        IF Barcodes."Arabic Description" <> IntBcode."Arabic Description" THEN BEGIN
+          Barcodes."Arabic Description" := IntBcode."Arabic Description";
+          UpdateVariantArabicDesc(IntBcode."Item No.",VarCode,BaseUOM,IntBcode."Arabic Description");
+        END;
+        IF Barcodes.PLU <> IntBcode.PLU THEN
+          Barcodes.PLU := IntBcode.PLU;                 
+      END;
+      Barcodes.MODIFY(TRUE);
+      IntBcode.Modified := FALSE;
+      IntBcode.MODIFY(FALSE);
+    END ELSE BEGIN
+      IntBcode.Modified := FALSE;
+      IntBcode.Inserted := TRUE;
+      IntBcode.MODIFY(FALSE);
+    END;
+  UNTIL IntBcode.NEXT = 0;
+
+// Delete
+IntBcode.RESET;
+IntBcode.SETCURRENTKEY(Deleted);
+IntBcode.SETRANGE(Deleted,TRUE);
+IF IntBcode.FINDSET THEN
+  REPEAT
+    IF Barcodes.GET(IntBcode."Barcode No.") THEN
+      Barcodes.DELETE(TRUE);
+    IntBcode.DELETE(FALSE);
+  UNTIL IntBcode.NEXT = 0;
+
+LOCAL ProcessPrices()
+// Insert
+IntPrice.RESET;
+IntPrice.SETCURRENTKEY(Inserted);
+IntPrice.SETRANGE(Inserted,TRUE);
+IF IntPrice.FINDSET THEN
+  REPEAT
+    IF Item.GET(IntPrice."Item No.") THEN BEGIN
+      VarCode := GetVarCode(Item."No.",IntPrice."Variant Description",Item."Variant Framework Code",'',IntPrice."Unit of Measure");
+      SalesPrice.RESET;
+      SalesPrice.INIT;
+      SalesPrice.VALIDATE("Item No.", IntPrice."Item No.");
+      SalesPrice."Sales Type" := SalesPrice."Sales Type"::"Customer Price Group";
+      SalesPrice.VALIDATE("Sales Code", IntPrice."Sales Code");
+      SalesPrice."Variant Code" := VarCode;
+      SalesPrice."Unit of Measure Code" := IntPrice."Unit of Measure";
+      SalesPrice."Starting Date" := TODAY;
+      SalesPrice.VALIDATE("Unit Price Including VAT",IntPrice."Unit Price Including VAT");
+      IF SalesPrice.INSERT(TRUE) THEN BEGIN 
+        IntPrice.Inserted := FALSE;
+        IntPrice.MODIFY(FALSE);
+      END;
+    END;
+  UNTIL IntPrice.NEXT = 0;
+
+// Modify
+IntPrice.RESET;
+IntPrice.SETCURRENTKEY(Modified);
+IntPrice.SETRANGE(Modified,TRUE);
+IF IntPrice.FINDSET THEN
+  REPEAT
+    IF Item.GET(IntPrice."Item No.") THEN BEGIN
+      VarCode := GetVarCode(Item."No.",IntPrice."Variant Description",Item."Variant Framework Code",'',IntPrice."Unit of Measure");
+      SalesPrice.RESET;
+      SalesPrice.SETRANGE("Item No.",IntPrice."Item No.");
+      SalesPrice.SETRANGE("Sales Type",SalesPrice."Sales Type"::"Customer Price Group");
+      SalesPrice.SETRANGE("Sales Code",IntPrice."Sales Code");
+      SalesPrice.SETRANGE("Variant Code",VarCode);
+      SalesPrice.SETRANGE("Unit of Measure Code",IntPrice."Unit of Measure");
+      IF SalesPrice.FINDLAST THEN BEGIN
+        IF SalesPrice."Starting Date" = TODAY THEN BEGIN
+          SalesPrice.VALIDATE("Unit Price Including VAT",IntPrice."Unit Price Including VAT");
+          SalesPrice.MODIFY(TRUE);
+        END ELSE BEGIN
+          SalesPrice2 := SalesPrice;
+          SalesPrice."Ending Date" := TODAY - 1;
+          SalesPrice.MODIFY(TRUE);
+          SalesPrice2."Starting Date" := TODAY;
+          SalesPrice2.VALIDATE("Unit Price Including VAT",IntPrice."Unit Price Including VAT");
+          SalesPrice2.INSERT(TRUE);
+        END;
+      END;
+      IntPrice.Modified := FALSE;
+      IntPrice.MODIFY(FALSE);
+    END;
+  UNTIL IntPrice.NEXT = 0;
+
+// Delete
+IntPrice.RESET;
+IntPrice.SETCURRENTKEY(Deleted);
+IntPrice.SETRANGE(Deleted,TRUE);
+IF IntPrice.FINDSET THEN
+  REPEAT
+    IF Item.GET(IntPrice."Item No.") THEN BEGIN
+      VarCode := GetVarCode(Item."No.",IntPrice."Variant Description",Item."Variant Framework Code",'',IntPrice."Unit of Measure");
+      SalesPrice.RESET;
+      SalesPrice.SETRANGE("Item No.",IntPrice."Item No.");
+      SalesPrice.SETRANGE("Sales Type",SalesPrice."Sales Type"::"Customer Price Group");
+      SalesPrice.SETRANGE("Sales Code",IntPrice."Sales Code");
+      SalesPrice.SETRANGE("Variant Code",VarCode);
+      SalesPrice.SETRANGE("Unit of Measure Code",IntPrice."Unit of Measure");
+      SalesPrice.DELETEALL(TRUE);
+      IntPrice.DELETE(FALSE);
+    END;
+  UNTIL IntPrice.NEXT = 0;
+
+LOCAL ProcessDistribution()
+// Insert
+Distribution.SETCURRENTKEY(Inserted);
+Distribution.SETRANGE(Inserted,TRUE);
+IF Distribution.FINDSET THEN
+  REPEAT
+    Distribution.Inserted := FALSE;
+    Distribution.MODIFY(FALSE);
+    Distribution.InsertCode;
+  UNTIL Distribution.NEXT = 0;
+
+// Modify
+Distribution.RESET;
+Distribution.SETCURRENTKEY(Modified);
+Distribution.SETRANGE(Modified,TRUE);
+IF Distribution.FINDSET THEN
+  REPEAT
+    Distribution.Modified := FALSE;
+    Distribution.MODIFY(TRUE);
+  UNTIL Distribution.NEXT = 0;
+
+// Delete
+Distribution.RESET;
+Distribution.SETCURRENTKEY(Deleted);
+Distribution.SETRANGE(Deleted,TRUE);
+IF Distribution.FINDSET THEN
+  Distribution.DELETEALL(TRUE);
+
+LOCAL AddItemUOM(No : Code[20];UOM : Code[10])
+IF NOT ItemUOM.GET(No,UOM) THEN BEGIN
+  ItemUOM.INIT;
+  ItemUOM."Item No." := No;
+  ItemUOM.VALIDATE(Code,UOM);
+  ItemUOM.INSERT(TRUE);
+END
+
+LOCAL FindVariantDimension()
+// Finds the Dimension Code and Dimension Value related to the Variant Framework's first dimension
+// to be able to initate extended variant values records
+VarDim.SETRANGE("Framework Code",FrameCode);
+VarDim.SETRANGE(Item,'');
+VarDim.SETRANGE(Extension,'');
+VarDim.SETRANGE("Dimension No.",1);
+IF VarDim.FIND('-') THEN
+  DimCode := VarDim.Code;
+
+VarDim.RESET;
+IF VarDim.GET(FrameCode,'',DimCode,'') THEN
+  DimNo := VarDim."Dimension No.";
+
+LOCAL RegisterItemVariant(ItemNo : Code[20];VariantValue : Code[25];BaseUOM : Code[10]) VarCode : Code[20]
+// Creates Item Variant, Item Variant Registration, Extended Variant Value for an item given a new variant value
+Item.GET(ItemNo);
+
+ItemVarReg.INIT;
+ItemVarReg."Item No." := ItemNo;
+ItemVarReg."Framework Code" := FrameCode;
+ItemVarReg."Variant Dimension 1" := VariantValue;
+ItemVarReg."Variant Base UOM":= BaseUOM;
+
+ItemVarReg.INSERT(TRUE);
+
+FrameworkSetup.GET(Item."Variant Framework Code");
+
+IF FrameworkSetup."Usage of Stock Keeping Units" > 0 THEN BEGIN
+   CASE FrameworkSetup."Usage of Stock Keeping Units" OF
+      FrameworkSetup."Usage of Stock Keeping Units"::"On Stores":
+        IF Stores.FINDSET THEN REPEAT
+          IF NOT StockKU.GET(Stores."Location Code",Item."No.",ItemVarReg.Variant) THEN BEGIN //LS-7675
+            StockKU.INIT;
+            StockKU.VALIDATE("Item No.",Item."No.");
+            StockKU.VALIDATE("Location Code",Stores."Location Code");
+            StockKU.VALIDATE("Variant Code",ItemVarReg.Variant);
+            StockKU.INSERT(TRUE);
+          END;
+        UNTIL Stores.NEXT = 0;
+
+      FrameworkSetup."Usage of Stock Keeping Units"::"On Item":
+        BEGIN
+          IF NOT StockKU.GET('',Item."No.",ItemVarReg.Variant) THEN BEGIN //LS-7675
+            StockKU.INIT;
+            StockKU.VALIDATE("Item No.",Item."No.");
+            StockKU.VALIDATE("Variant Code",ItemVarReg.Variant);
+            StockKU.INSERT(TRUE); //LS-7675
+          END;
+        END;
+    END;
+END;
+
+ExtVarValue.INIT;
+ExtVarValue."Framework Code" := FrameCode;
+ExtVarValue."Item No." := ItemNo;
+ExtVarValue.Code := DimCode;
+ExtVarValue.Dimension := 1;
+ExtVarValue.INSERT(TRUE);
+
+EXIT(ItemVarReg.Variant);
+
+LOCAL FindVariantValueBaseUOM(Value : Code[25]) BaseUOM : Code[10]
+IF Value <> '' THEN
+  ExtVarValue.GET(FrameCode,'',DimCode,Value,'')
+ELSE
+  ExtVarValue.GET(FrameCode,'',DimCode,DefBaseValue,'');
+BaseUOM := ExtVarValue."Default UOM";
+
+LOCAL GetVarCode(ItemNo : Code[20];Value : Code[25];FrameworkCode : Code[30];BaseUOM : Code[10];UOM : Code[10]) : Code[10]
+IF (Value = '') AND (FrameworkCode <> '') THEN
+  VarCode := '00' // the variant has already been automatically created on item creation
+ELSE IF (Value = '') AND (FrameworkCode = '') THEN
+  VarCode := ''
+ELSE IF ItemVarReg.GET(ItemNo,Value,'','','','','') THEN
+  VarCode := ItemVarReg.Variant
+ELSE IF BaseUOM <> '' THEN
+  VarCode := RegisterItemVariant(ItemNo,Value,BaseUOM);
+
+IF NOT VarUOM.GET(ItemNo,VarCode,UOM) THEN BEGIN
+  VarUOM.INIT;
+  VarUOM."Item No." := ItemNo;
+  VarUOM."Variant Code" := VarCode;
+  VarUOM."UOM Code" := UOM;
+  IF VarUOM.INSERT(TRUE) THEN;
+END;
+
+EXIT(VarCode);
+
+LOCAL UpdateVariantArabicDesc(ItemNo : Code[20];VarCode : Code[10];BaseUOM : Code[10];ArabicDesc : Text[30])
+IF ItemVariant.GET(ItemNo,VarCode) THEN BEGIN
+  IF ItemVariant."Variant Base UOM" = BaseUOM THEN BEGIN
+    ItemVariant."Arabic Description" := ArabicDesc;
+    ItemVariant.MODIFY(TRUE);
+  END;
+END;
+   

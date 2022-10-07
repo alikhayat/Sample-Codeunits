@@ -1,0 +1,33 @@
+Documentation()
+
+OnRun(VAR Rec : Record "Scheduler Job Header")
+
+SchHdr := Rec;
+
+RetailSetup.GET;
+StoreNo := RetailSetup."Local Store No.";
+
+Scales.SETRANGE("Store No.",StoreNo);
+IF Scales.FINDSET THEN
+  REPEAT
+    ScaleRec.RESET;
+    ScaleRec.SETRANGE("Store No.",StoreNo);
+    ScaleRec.SETRANGE("Scale No.",Scales."Scale Code");
+    ScaleRec.SETFILTER("Valid on Date",'=%1',TODAY);
+    ScaleRec.SETFILTER("Sent to Scale",'=%1',FALSE);
+    IF ScaleRec.FINDSET THEN BEGIN
+      ScaleFormat.GET(Scales."Scale Format");
+      IF NOT CODEUNIT.RUN(ScaleFormat."Codeunit ID",ScaleRec) THEN
+        ScaleErrorLog := ScaleErrorLog + Scales."Scale Code" + ',';
+    END;
+  UNTIL Scales.NEXT = 0;
+
+
+IF STRLEN(ScaleErrorLog) = 0 THEN
+  SchHdr."Last Message Text" := 'Success'
+ELSE
+  SchHdr."Last Message Text" := 'Error with scales: ' + ScaleErrorLog;
+
+SchHdr.MODIFY;
+COMMIT;
+Rec := SchHdr;
